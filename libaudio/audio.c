@@ -11,38 +11,51 @@
 
 static snd_pcm_t *pcm = NULL;
 static snd_pcm_uframes_t period_size = 1024; 
-static unsigned int periods = 16;              //周期数（buffer的大小） 
+static unsigned int periods = 16;
+static unsigned int channel = 2;              //声道数 
 static unsigned int rate = 44100;           // 以后对接 AI 建议改 16000
+static u_int32_t total_pcm_bytes;
 static volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
 static char g_filename[256];
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
-    unsigned char *buf = malloc(1024 * 4); // 假设 period_size 是 1024
+    unsigned char *buf = malloc(period_size * channel * 2); // 假设 period_size 是 1024
     int fd = -1;
 
     while (1) {
         if (g_record_run) {
             // 1. 只有刚开始录音时才打开文件
             if (fd < 0) {
-                fd = open(g_filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                // 记得这里要调用 snd_pcm_prepare(pcm) 确保设备就绪
+                fd = open(g_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
+                if (fd < 0) {
+                    // 核心异常处理：打日志，并且可以考虑关闭录音开关
+                    perror("音频文件打开失败"); 
+                    continue; 
+                }
+            
+            if (fd >= 0) {
+                lseek(fd, 44, SEEK_SET);
+                total_pcm_bytes = 0;
             }
-
+        }
             // 2. 读取音频数据 (这是原来的阻塞调用)
-            int ret = snd_pcm_readi(pcm, buf, 1024);
+            int ret = snd_pcm_readi(pcm, buf, period_size);
             if (ret > 0 && fd > 0) {
-                write(fd, buf, ret * 4);
+                int bytes_to_write = ret * channel * 2;
+                write(fd, buf, bytes_to_write);
+                total_pcm_bytes += bytes_to_write;
             } else if (ret == -EPIPE) {
                 snd_pcm_prepare(pcm); // 处理 Overrun
             }
         } else {
             // 3. 停止录音时关闭文件
             if (fd >= 0) {
+                write_wav_header(fd, total_pcm_bytes, rate, channel);
                 close(fd);
                 fd = -1;
-                printf("[Audio] 录音已保存: %s\n", g_filename);
+                printf("[Audio] WAV文件保存完成，大小: %u 字节\n", total_pcm_bytes);
             }
             usleep(10000); // 停止期间进入低功耗休眠
         }
@@ -100,7 +113,7 @@ int audio_init(void) {
     }
 
     /* 设置声道数: 双声道 */
-    ret = snd_pcm_hw_params_set_channels(pcm, hwparams, 2);
+    ret = snd_pcm_hw_params_set_channels(pcm, hwparams, channel);
     if (0 > ret) {
         fprintf(stderr, "snd_pcm_hw_params_set_channels error: %s\n", snd_strerror(ret));
         goto err2;
