@@ -35,5 +35,7 @@ void audio_start_recording(void);
 void audio_stop_recording(void);
 
 extern volatile int g_record_run;
+extern char g_filename[256];
+extern volatile int g_file_ready;
 
 #endif

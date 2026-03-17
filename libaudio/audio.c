@@ -17,8 +17,9 @@ static unsigned int rate = 44100;           // 以后对接 AI 建议改 16000
 static u_int32_t total_pcm_bytes;
 volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
-static char g_filename[256];
+char g_filename[256];
 static int g_record_count = 0;
+volatile int g_file_ready = 0; //处理录音完成标志位
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
@@ -57,6 +58,7 @@ void* record_worker(void* arg) {
                 write_wav_header(fd, total_pcm_bytes, rate, channel);
                 close(fd);
                 fd = -1;
+                g_file_ready = 1;
                 printf("[Audio] WAV文件保存完成，大小: %u 字节\n", total_pcm_bytes);
             }
             usleep(10000); // 停止期间进入低功耗休眠

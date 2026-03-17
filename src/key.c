@@ -4,7 +4,8 @@
 #include <linux/input.h> // 用于 struct input_event 和按键宏定义
 #include "key.h"
 #include "audio.h"
-#include <pthread.h>        
+#include <pthread.h>
+#include "net.h"        
 
 static int fd = -1;
 
@@ -35,16 +36,28 @@ int Key_Read()
 
 void* key_monitor_thread(void* arg)
 {
+    int is_recording = 0;
     while(1)
     {
         int key_value = Key_Read();
         if(key_value == 1)
         {
             audio_start_recording();
+            is_recording = 1;
         }
         else if(key_value == 0)
         {
             audio_stop_recording();
+            if(is_recording == 1)
+            {
+                while(!g_file_ready) {
+                    usleep(1000); // 每次只等 1ms，极速响应
+                }
+                printf("[APP] 检测到录音收尾完成，开始上传: %s\n", g_filename);
+                send_file_to_server(g_filename, "172.25.6.200", 8080);
+                g_file_ready = 0; // 上传完重置，等待下次录音
+                is_recording = 0;
+            }
         }
     }
 }
