@@ -1,6 +1,9 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
+#include <stdint.h>    // 必须包含此头文件
+#include <sys/types.h> // 提供兼容性支持
+
 typedef struct WAV_RIFF {
     char ChunkID[4];                /* "RIFF" */
     u_int32_t ChunkSize;            /* 总字节数 - 8 */
@@ -30,5 +33,7 @@ void audio_cleanup(void);
 // 录音控制接口
 void audio_start_recording(const char* output_file);
 void audio_stop_recording(void);
+
+extern volatile int g_record_run;
 
 #endif

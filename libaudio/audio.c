@@ -15,7 +15,7 @@ static unsigned int periods = 16;
 static unsigned int channel = 2;              //声道数 
 static unsigned int rate = 44100;           // 以后对接 AI 建议改 16000
 static u_int32_t total_pcm_bytes;
-static volatile int g_record_run = 0; // 核心控制开关
+volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
 static char g_filename[256];
 
@@ -32,6 +32,7 @@ void* record_worker(void* arg) {
                 if (fd < 0) {
                     // 核心异常处理：打日志，并且可以考虑关闭录音开关
                     perror("音频文件打开失败"); 
+                    g_record_run = 0;
                     continue; 
                 }
             

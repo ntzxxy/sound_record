@@ -15,7 +15,7 @@ amixer sset Headphone 125,125
 #Turn on the speaker
 amixer sset 'Speaker Playback ZC' on
 #Set the volume of your Speaker(98% volume，127 is the MaxVolume)
-amixer sset Speaker 125,125
+amixer sset Speaker 100,100
 #Set the volume of your Speaker AC(80% volume，100 is the MaxVolume)
 amixer sset 'Speaker AC' 4
 #Set the volume of your Speaker AC(80% volume，5 is the MaxVolume)
