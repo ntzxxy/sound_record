@@ -31,7 +31,7 @@ int audio_init(void);
 void audio_cleanup(void);
 
 // 录音控制接口
-void audio_start_recording(const char* output_file);
+void audio_start_recording(void);
 void audio_stop_recording(void);
 
 extern volatile int g_record_run;

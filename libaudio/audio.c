@@ -18,6 +18,7 @@ static u_int32_t total_pcm_bytes;
 volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
 static char g_filename[256];
+static int g_record_count = 0;
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
@@ -152,8 +153,8 @@ err1:
    
 }
 
-void audio_start_recording(const char* output_file) {
-    strncpy(g_filename, output_file, 255);
+void audio_start_recording(void) {
+    snprintf(g_filename, sizeof(g_filename), "rec_%03d.wav", g_record_count++);
     g_record_run = 1; // 拨动开关
 }
 

@@ -40,7 +40,7 @@ void* key_monitor_thread(void* arg)
         int key_value = Key_Read();
         if(key_value == 1)
         {
-            audio_start_recording("record.wav");
+            audio_start_recording();
         }
         else if(key_value == 0)
         {
