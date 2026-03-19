@@ -156,7 +156,7 @@ err1:
 }
 
 void audio_start_recording(void) {
-    snprintf(g_filename, sizeof(g_filename), "rec_%03d.wav", g_record_count++);
+    snprintf(g_filename, sizeof(g_filename), "/tmp/rec_%03d.wav", g_record_count++);
     g_record_run = 1; // 拨动开关
 }
 
