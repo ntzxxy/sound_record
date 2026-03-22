@@ -34,9 +34,11 @@ void audio_cleanup(void);
 void audio_start_recording(void);
 void audio_stop_recording(void);
 void write_wav_header(int fd, int pcm_data_size, int sample_rate, int channels);
-
+void audio_wait_file_ready(void);
+void audio_set_file_ready(void);
+void audio_reset_file_ready(void);
 extern volatile int g_record_run;
 extern char g_filename[256];
-extern volatile int g_file_ready;
+
 
 #endif

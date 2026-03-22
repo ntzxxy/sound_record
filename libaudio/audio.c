@@ -19,7 +19,9 @@ volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
 char g_filename[256];
 static int g_record_count = 0;
-volatile int g_file_ready = 0; //处理录音完成标志位
+volatile static int g_file_ready = 0;
+static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_file_cond = PTHREAD_COND_INITIALIZER;
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
@@ -58,7 +60,7 @@ void* record_worker(void* arg) {
                 write_wav_header(fd, total_pcm_bytes, rate, channel);
                 close(fd);
                 fd = -1;
-                g_file_ready = 1;
+                audio_set_file_ready();
                 printf("[Audio] WAV文件保存完成，大小: %u 字节\n", total_pcm_bytes);
             }
             usleep(10000); // 停止期间进入低功耗休眠
@@ -208,4 +210,34 @@ void audio_cleanup(void)
     free(buffer);
     pcm_handle = NULL;
     buffer = NULL;
+}
+//等待按键调用
+void audio_wait_file_ready(void)
+{
+    pthread_mutex_lock(&g_file_mutex);
+
+    while (!g_file_ready) {
+        pthread_cond_wait(&g_file_cond, &g_file_mutex);
+    }
+
+    pthread_mutex_unlock(&g_file_mutex);
+}
+//录音线程置位
+void audio_set_file_ready(void)
+{
+    pthread_mutex_lock(&g_file_mutex);
+
+    g_file_ready = 1;
+    pthread_cond_signal(&g_file_cond);
+
+    pthread_mutex_unlock(&g_file_mutex);
+}
+//开始新录音
+void audio_reset_file_ready(void)
+{
+    pthread_mutex_lock(&g_file_mutex);
+
+    g_file_ready = 0;
+
+    pthread_mutex_unlock(&g_file_mutex);
 }
