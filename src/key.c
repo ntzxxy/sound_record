@@ -60,6 +60,8 @@ void* key_monitor_thread(void* arg)
             }
         }
     }
+    
+return NULL;
 }
 
 int Key_Thread(const char *path)
@@ -72,5 +74,16 @@ int Key_Thread(const char *path)
         return -1;
     }
     pthread_t tid;
-    pthread_create(&tid,NULL,key_monitor_thread,NULL);
+    int ret = pthread_create(&tid,NULL,key_monitor_thread,NULL);
+    if(ret != 0)
+    {
+        printf("pthread_create failed: %s\n", strerror(ret));
+    }
+     ret = pthread_detach(tid);
+    if (ret != 0) {
+        fprintf(stderr, "key_pthread_detach failed\n");
+        return -1;
+    }
+
+    return 0;
 }

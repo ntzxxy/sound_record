@@ -35,5 +35,5 @@ void* led_blink_thread(void* arg) {
         
 
     }
-
+return NULL;
 }

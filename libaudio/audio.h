@@ -33,6 +33,7 @@ void audio_cleanup(void);
 // 录音控制接口
 void audio_start_recording(void);
 void audio_stop_recording(void);
+void write_wav_header(int fd, int pcm_data_size, int sample_rate, int channels);
 
 extern volatile int g_record_run;
 extern char g_filename[256];

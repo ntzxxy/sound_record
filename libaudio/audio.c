@@ -13,7 +13,7 @@ static snd_pcm_t *pcm = NULL;
 static snd_pcm_uframes_t period_size = 1024; 
 static unsigned int periods = 16;
 static unsigned int channel = 2;              //声道数 
-static unsigned int rate = 44100;           // 以后对接 AI 建议改 16000
+static unsigned int rate = 44100;           
 static u_int32_t total_pcm_bytes;
 volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
@@ -23,12 +23,12 @@ volatile int g_file_ready = 0; //处理录音完成标志位
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
-    unsigned char *buf = malloc(period_size * channel * 2); // 假设 period_size 是 1024
+    unsigned char *buf = malloc(period_size * channel * 2); 
     int fd = -1;
 
     while (1) {
         if (g_record_run) {
-            // 1. 只有刚开始录音时才打开文件
+            // 只有刚开始录音时才打开文件
             if (fd < 0) {
                 fd = open(g_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
                 if (fd < 0) {
@@ -70,7 +70,6 @@ void* record_worker(void* arg) {
 
 // 对外接口：启动录音线程
 int audio_init(void) {
-    // 这里放原来的 snd_pcm_init 代码
     snd_pcm_hw_params_t *hwparams = NULL;
     int ret;
 
@@ -92,9 +91,7 @@ int audio_init(void) {
         goto err2;
     }
 
-    /************** 
-     设置参数
-    ***************/
+
     /* 设置访问类型: 交错模式 */
     ret = snd_pcm_hw_params_set_access(pcm, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED);
     if (0 > ret) {
@@ -144,7 +141,15 @@ int audio_init(void) {
         fprintf(stderr, "snd_pcm_hw_params error: %s\n", snd_strerror(ret));
         goto err1;
     }
-     pthread_create(&g_record_thread, NULL, record_worker, NULL);
+     ret = pthread_create(&g_record_thread, NULL, record_worker, NULL);
+     if(ret != 0){
+        fprintf(stderr,"record_pthread_create failed\n");
+     }
+     ret = pthread_detach(g_record_thread);
+    if (ret != 0) {
+        fprintf(stderr, "record_pthread_detach failed\n");
+        return -1;
+    }
      return 0;
 
 err2:
@@ -170,12 +175,12 @@ void write_wav_header(int fd, int pcm_data_size, int sample_rate, int channels) 
     FMT_t fmt;
     DATA_t data;
 
-    // 1. 填充 RIFF 段
+    // 填充 RIFF 段
     memcpy(riff.ChunkID, "RIFF", 4);
     riff.ChunkSize = pcm_data_size + 36; // 总大小 - ChunkID和ChunkSize占据的8字节
     memcpy(riff.Format, "WAVE", 4);
 
-    // 2. 填充 FMT 段
+    // 填充 FMT 段
     memcpy(fmt.Subchunk1ID, "fmt ", 4);
     fmt.Subchunk1Size = 16;
     fmt.AudioFormat = 1; // PCM格式
@@ -185,13 +190,22 @@ void write_wav_header(int fd, int pcm_data_size, int sample_rate, int channels) 
     fmt.BlockAlign = channels * 16 / 8;
     fmt.BitsPerSample = 16;
 
-    // 3. 填充 DATA 段
+    // 填充 DATA 段
     memcpy(data.Subchunk2ID, "data", 4);
     data.Subchunk2Size = pcm_data_size;
 
-    // 4. 写入文件开头
+    // 写入文件开头
     lseek(fd, 0, SEEK_SET); // 回到文件头
     write(fd, &riff, sizeof(RIFF_t));
     write(fd, &fmt, sizeof(FMT_t));
     write(fd, &data, sizeof(DATA_t));
+}
+
+void audio_cleanup(void)
+{
+    snd_pcm_drop(pcm_handle);
+    snd_pcm_close(pcm_handle);
+    free(buffer);
+    pcm_handle = NULL;
+    buffer = NULL;
 }
