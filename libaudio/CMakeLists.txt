@@ -2,7 +2,7 @@
 set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 
 # 2. 再生成库
-add_library(audio_lib STATIC audio.c)
+add_library(audio_lib STATIC audio.cpp ringbuffer.cpp)
 
 # 3. 最后改名
 set_target_properties(audio_lib PROPERTIES OUTPUT_NAME "audio")

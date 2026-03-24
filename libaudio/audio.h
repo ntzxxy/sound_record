@@ -1,8 +1,12 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <stdint.h>    // 必须包含此头文件
-#include <sys/types.h> // 提供兼容性支持
+#include <stdint.h>    
+#include <sys/types.h> 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct WAV_RIFF {
     char ChunkID[4];                /* "RIFF" */
@@ -40,5 +44,8 @@ void audio_reset_file_ready(void);
 extern volatile int g_record_run;
 extern char g_filename[256];
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif

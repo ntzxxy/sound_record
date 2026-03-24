@@ -7,7 +7,7 @@ include_directories(.)      #在main中调用的时候去当前目录下找key
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 # 3. 再生成程序
-add_executable(assistant_app main.c key.c led.c)
+add_executable(out main.c key.c led.c)
 
 # 4. 最后链接
-target_link_libraries(assistant_app audio_lib net_lib asound pthread)
+target_link_libraries(out audio_lib net_lib asound pthread)

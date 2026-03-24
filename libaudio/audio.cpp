@@ -6,6 +6,8 @@
 #include <errno.h> 
 #include <string.h> 
 #include <fcntl.h>
+#include "ringbuffer.hpp"
+#include <vector>
 
 #define PCM_CAPTURE_DEV "hw:0,0" 
 
@@ -17,56 +19,91 @@ static unsigned int rate = 44100;
 static u_int32_t total_pcm_bytes;
 volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
+static pthread_t g_writer_thread;
 char g_filename[256];
 static int g_record_count = 0;
 volatile static int g_file_ready = 0;
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_file_cond = PTHREAD_COND_INITIALIZER;
+static RingBuffer g_rb(128 * 1024);
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
-    unsigned char *buf = malloc(period_size * channel * 2); 
-    int fd = -1;
+    std::vector<uint8_t> buf(period_size * channel * 2);
 
     while (1) {
         if (g_record_run) {
-            // 只有刚开始录音时才打开文件
-            if (fd < 0) {
-                fd = open(g_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
-                if (fd < 0) {
-                    // 核心异常处理：打日志，并且可以考虑关闭录音开关
-                    perror("音频文件打开失败"); 
-                    g_record_run = 0;
-                    continue; 
-                }
             
-            if (fd >= 0) {
-                lseek(fd, 44, SEEK_SET);
-                total_pcm_bytes = 0;
-            }
-        }
-            // 2. 读取音频数据 (这是原来的阻塞调用)
-            int ret = snd_pcm_readi(pcm, buf, period_size);
-            if (ret > 0 && fd > 0) {
+            int ret = snd_pcm_readi(pcm, buf.data(), period_size);
+            if (ret > 0 ) {
                 int bytes_to_write = ret * channel * 2;
-                write(fd, buf, bytes_to_write);
-                total_pcm_bytes += bytes_to_write;
+                size_t written = g_rb.write(buf.data(),bytes_to_write);
+                if (written < static_cast<size_t>(bytes_to_write)) {
+                fprintf(stderr, "[RB] buffer full, drop %d bytes\n",
+                        bytes_to_write - static_cast<int>(written));
+            }
             } else if (ret == -EPIPE) {
                 snd_pcm_prepare(pcm); // 处理 Overrun
             }
         } else {
             // 3. 停止录音时关闭文件
+            usleep(10000); // 停止期间进入低功耗休眠
+        }
+    }
+    return NULL;
+}
+
+void* writer_worker(void* arg)
+{
+    std::vector<uint8_t> out_buf(period_size * channel * 2);
+    int fd = -1;
+
+    while (1) {
+        if (g_record_run) {
+            if (fd < 0) {
+                fd = open(g_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
+                if (fd < 0) {
+                    perror("音频文件打开失败");
+                    usleep(10000);
+                    continue;
+                }
+
+                lseek(fd, 44, SEEK_SET);
+                total_pcm_bytes = 0;
+            }
+
+            size_t read_bytes = g_rb.read(out_buf.data(), out_buf.size());
+            if (read_bytes > 0) {
+                write(fd, out_buf.data(), read_bytes);
+                total_pcm_bytes += read_bytes;
+            }
+        } else {
             if (fd >= 0) {
+                while (g_rb.availableData() > 0) {
+                    size_t chunk = g_rb.availableData();
+                    if (chunk > out_buf.size()) {
+                        chunk = out_buf.size();
+                    }
+
+                    chunk = g_rb.read(out_buf.data(), chunk);
+                    if (chunk > 0) {
+                        write(fd, out_buf.data(), chunk);
+                        total_pcm_bytes += chunk;
+                    }
+                }
+
                 write_wav_header(fd, total_pcm_bytes, rate, channel);
                 close(fd);
                 fd = -1;
                 audio_set_file_ready();
+
                 printf("[Audio] WAV文件保存完成，大小: %u 字节\n", total_pcm_bytes);
             }
-            usleep(10000); // 停止期间进入低功耗休眠
+
+            usleep(10000);
         }
     }
-    free(buf);
+
     return NULL;
 }
 
@@ -152,6 +189,18 @@ int audio_init(void) {
         fprintf(stderr, "record_pthread_detach failed\n");
         return -1;
     }
+    ret = pthread_create(&g_writer_thread, NULL, writer_worker, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "writer_pthread_create failed\n");
+        return -1;
+    }
+
+    ret = pthread_detach(g_writer_thread);
+    if (ret != 0) {
+        fprintf(stderr, "writer_pthread_detach failed\n");
+        return -1;
+    }
+
      return 0;
 
 err2:
@@ -205,11 +254,12 @@ void write_wav_header(int fd, int pcm_data_size, int sample_rate, int channels) 
 
 void audio_cleanup(void)
 {
-    snd_pcm_drop(pcm_handle);
-    snd_pcm_close(pcm_handle);
-    free(buffer);
-    pcm_handle = NULL;
-    buffer = NULL;
+    if(pcm)
+    {
+        snd_pcm_drop(pcm);
+        snd_pcm_close(pcm);
+        pcm = NULL;
+    }
 }
 //等待按键调用
 void audio_wait_file_ready(void)
