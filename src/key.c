@@ -1,11 +1,17 @@
-#include <stdio.h>      // 用于 printf 报错或调试
-#include <fcntl.h>      // 用于 open
-#include <unistd.h>     // 用于 read, close
-#include <linux/input.h> // 用于 struct input_event 和按键宏定义
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/input.h>
+#include <string.h>
 #include "key.h"
 #include "audio.h"
 #include <pthread.h>
-#include "net.h"        
+#include "net.h"
+
+// 服务器配置（可通过 main 覆盖）
+int g_enable_upload = 0;
+const char *g_server_ip = "192.168.0.7";
+int g_server_port = 8080;
 
 static int fd = -1;
 
@@ -49,9 +55,14 @@ void* key_monitor_thread(void* arg)
         {
             audio_stop_recording();
             audio_wait_file_ready();
-            
-            printf("[APP] 检测到录音收尾完成，开始上传: %s\n", g_filename);
-            send_file_to_server(g_filename, "172.25.6.200", 8080);           
+
+            if (g_enable_upload) {
+                printf("[APP] 录音完成，开始上传: %s -> %s:%d\n",
+                       g_filename, g_server_ip, g_server_port);
+                send_file_to_server(g_filename, g_server_ip, g_server_port);
+            } else {
+                printf("[APP] 录音完成，文件保存至: %s（上传已禁用）\n", g_filename);
+            }
         }
     }
     

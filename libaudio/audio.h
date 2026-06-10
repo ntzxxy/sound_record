@@ -1,12 +1,23 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <stdint.h>    
-#include <sys/types.h> 
+#include <stdint.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// 音频设备配置
+typedef struct {
+    const char *device;    // ALSA 设备名，如 "plughw:1,0"
+    unsigned int rate;     // 采样率，如 16000
+    unsigned int channels; // 声道数
+} AudioConfig;
+
+// 预设配置
+extern const AudioConfig AUDIO_CFG_WM8960;   // 板载咪头
+extern const AudioConfig AUDIO_CFG_USB;      // USB 麦克风
 
 typedef struct WAV_RIFF {
     char ChunkID[4];                /* "RIFF" */
@@ -31,7 +42,7 @@ typedef struct WAV_DATA {
 } __attribute__ ((packed)) DATA_t;
 
 // 初始化和去初始化
-int audio_init(void);
+int audio_init(const AudioConfig *cfg);
 void audio_cleanup(void);
 
 // 录音控制接口

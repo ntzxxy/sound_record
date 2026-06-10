@@ -1,21 +1,33 @@
 #include <alsa/asoundlib.h>
 #include <pthread.h>
 #include "audio.h"
-#include <stdio.h> 
-#include <stdlib.h> 
-#include <errno.h> 
-#include <string.h> 
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
 #include <fcntl.h>
 #include "ringbuffer.hpp"
 #include <vector>
 
-#define PCM_CAPTURE_DEV "hw:0,0" 
+// 预设配置定义
+const AudioConfig AUDIO_CFG_WM8960 = {
+    .device   = "hw:0,0",
+    .rate     = 44100,
+    .channels = 2,
+};
+
+const AudioConfig AUDIO_CFG_USB = {
+    .device   = "plughw:1,0",
+    .rate     = 16000,
+    .channels = 1,
+    
+};
 
 static snd_pcm_t *pcm = NULL;
-static snd_pcm_uframes_t period_size = 1024; 
+static snd_pcm_uframes_t period_size = 1024;
 static unsigned int periods = 16;
-static unsigned int channel = 2;              //声道数 
-static unsigned int rate = 44100;           
+static unsigned int channel = 1;
+static unsigned int rate = 16000;
 static u_int32_t total_pcm_bytes;
 volatile int g_record_run = 0; // 核心控制开关
 static pthread_t g_record_thread;
@@ -108,15 +120,24 @@ void* writer_worker(void* arg)
 }
 
 // 对外接口：启动录音线程
-int audio_init(void) {
+int audio_init(const AudioConfig *cfg) {
     snd_pcm_hw_params_t *hwparams = NULL;
     int ret;
+    unsigned int actual_rate;
+
+    if (cfg == NULL) return -1;
+
+    channel = cfg->channels;
+    rate    = cfg->rate;
+
+    fprintf(stderr, "[Audio] device=%s, rate=%u, channels=%u\n",
+            cfg->device, rate, channel);
 
     /* 打开PCM设备 */
-    ret = snd_pcm_open(&pcm, PCM_CAPTURE_DEV, SND_PCM_STREAM_CAPTURE, 0);
+    ret = snd_pcm_open(&pcm, cfg->device, SND_PCM_STREAM_CAPTURE, 0);
     if (0 > ret) {
         fprintf(stderr, "snd_pcm_open error: %s: %s\n",
-                    PCM_CAPTURE_DEV, snd_strerror(ret));
+                    cfg->device, snd_strerror(ret));
         return -1;
     }
 
@@ -129,7 +150,6 @@ int audio_init(void) {
         fprintf(stderr, "snd_pcm_hw_params_any error: %s\n", snd_strerror(ret));
         goto err2;
     }
-
 
     /* 设置访问类型: 交错模式 */
     ret = snd_pcm_hw_params_set_access(pcm, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED);
@@ -145,14 +165,20 @@ int audio_init(void) {
         goto err2;
     }
 
-    /* 设置采样率 */
-    ret = snd_pcm_hw_params_set_rate(pcm, hwparams, rate, 0);
+    /* 设置采样率（near: 允许硬件选择最接近的支持值，plughw 自动转换） */
+    actual_rate = rate;
+    ret = snd_pcm_hw_params_set_rate_near(pcm, hwparams, &actual_rate, NULL);
     if (0 > ret) {
-        fprintf(stderr, "snd_pcm_hw_params_set_rate error: %s\n", snd_strerror(ret));
+        fprintf(stderr, "snd_pcm_hw_params_set_rate_near error: %s\n", snd_strerror(ret));
         goto err2;
     }
+    if (actual_rate != rate) {
+        fprintf(stderr, "[Audio] rate adjusted: requested=%u, actual=%u\n",
+                rate, actual_rate);
+        rate = actual_rate;
+    }
 
-    /* 设置声道数: 双声道 */
+    /* 设置声道数 */
     ret = snd_pcm_hw_params_set_channels(pcm, hwparams, channel);
     if (0 > ret) {
         fprintf(stderr, "snd_pcm_hw_params_set_channels error: %s\n", snd_strerror(ret));
@@ -180,6 +206,10 @@ int audio_init(void) {
         fprintf(stderr, "snd_pcm_hw_params error: %s\n", snd_strerror(ret));
         goto err1;
     }
+
+    fprintf(stderr, "[Audio] init OK: actual_rate=%u, channels=%u\n",
+            rate, channel);
+
      ret = pthread_create(&g_record_thread, NULL, record_worker, NULL);
      if(ret != 0){
         fprintf(stderr,"record_pthread_create failed\n");
@@ -208,7 +238,7 @@ err2:
 err1:
     snd_pcm_close(pcm); //关闭pcm设备
     return -1;
-   
+
 }
 
 void audio_start_recording(void) {

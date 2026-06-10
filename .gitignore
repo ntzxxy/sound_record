@@ -1,4 +1,9 @@
 build/
 server/received_audio/
 *.wav
-./vscode
+.vscode/
+.idea/
+cmake-build-*/
+*.swp
+*.swo
+*~
