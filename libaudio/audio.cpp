@@ -77,7 +77,8 @@ void* writer_worker(void* arg)
     /* ==========================================
      * 流实时传输模式 (STREAMING)
      * ========================================== */
-    std::vector<uint8_t> out_buf(STREAM_FRAME_PAYLOAD_SIZE);
+    const uint32_t frame_size = rate * channel / 5; // 100ms PCM: rate * 0.1 * ch * 2
+    std::vector<uint8_t> out_buf(frame_size);
     int stream_fd = -1;
     uint32_t frame_seq = 0;
 
@@ -95,10 +96,10 @@ void* writer_worker(void* arg)
             }
 
             // 只有当 RingBuffer 里的数据够拼满 100ms 一帧时才读出来发送
-            if (g_rb.availableData() >= STREAM_FRAME_PAYLOAD_SIZE) {
-                size_t read_bytes = g_rb.read(out_buf.data(), STREAM_FRAME_PAYLOAD_SIZE);
-                if (read_bytes == STREAM_FRAME_PAYLOAD_SIZE) {
-                    if (stream_send_frame(stream_fd, frame_seq++, out_buf.data(), STREAM_FRAME_PAYLOAD_SIZE) < 0) {
+            if (g_rb.availableData() >= frame_size) {
+                size_t read_bytes = g_rb.read(out_buf.data(), frame_size);
+                if (read_bytes == frame_size) {
+                    if (stream_send_frame(stream_fd, frame_seq++, out_buf.data(), frame_size) < 0) {
                         fprintf(stderr, "[Audio-Stream] 发送中断，强行关闭流\n");
                         stream_close(stream_fd);
                         stream_fd = -1;
@@ -115,12 +116,13 @@ void* writer_worker(void* arg)
                 // 把 RingBuffer 剩下不足一帧的数据凑成最后一帧发掉
                 while (g_rb.availableData() > 0) {
                     size_t data_len = g_rb.availableData();
-                    if (data_len > STREAM_FRAME_PAYLOAD_SIZE) {
-                        data_len = STREAM_FRAME_PAYLOAD_SIZE;
+                    if (data_len > frame_size) {
+                        data_len = frame_size;
                     }
                     size_t read_bytes = g_rb.read(out_buf.data(), data_len);
                     if (read_bytes > 0) {
-                        stream_send_frame(stream_fd, frame_seq++, out_buf.data(), read_bytes);
+                        if (stream_send_frame(stream_fd, frame_seq++, out_buf.data(), read_bytes) < 0)
+                            break;
                     }
                 }
 

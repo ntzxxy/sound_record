@@ -12,10 +12,7 @@
 int send_file_to_server(const char *filename, const char *ip, int port);
 
 #ifdef STREAMING_MODE
-/* * 100ms 一帧 @ 16000Hz 单声道 16bit s16le
- * 16000 * 0.1s = 1600 samples -> 3200 字节
- */
-#define STREAM_FRAME_PAYLOAD_SIZE 3200
+// 帧大小 = rate * 0.1s * channels * 2，由 audio 层根据设备配置动态计算
 
 // 严格对齐的帧头协议 (12 字节)
 typedef struct {

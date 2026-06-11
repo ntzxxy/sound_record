@@ -82,9 +82,7 @@ int Key_Thread(const char *path)
     {
         perror("init error");
         return -1;
-    }static int g_file_ready = 0;
-static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_file_cond = PTHREAD_COND_INITIALIZER;
+    }
     pthread_t tid;
     int ret = pthread_create(&tid,NULL,key_monitor_thread,NULL);
     if(ret != 0)
