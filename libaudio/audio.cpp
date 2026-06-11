@@ -23,6 +23,12 @@ const AudioConfig AUDIO_CFG_USB = {
     
 };
 
+// 引入外界控制流传输地址的全局变量声明（key中定义）
+extern "C" {
+extern const char *g_server_ip;
+extern int g_server_port;
+}
+
 static snd_pcm_t *pcm = NULL;
 static snd_pcm_uframes_t period_size = 1024;
 static unsigned int periods = 16;
@@ -67,6 +73,70 @@ void* record_worker(void* arg) {
 
 void* writer_worker(void* arg)
 {
+#ifdef STREAMING_MODE
+    /* ==========================================
+     * 流实时传输模式 (STREAMING)
+     * ========================================== */
+    std::vector<uint8_t> out_buf(STREAM_FRAME_PAYLOAD_SIZE);
+    int stream_fd = -1;
+    uint32_t frame_seq = 0;
+
+    while (1) {
+        if (g_record_run) {
+            // 刚按下按键，连接未建立
+            if (stream_fd < 0) {
+                frame_seq = 0;
+                stream_fd = stream_open(g_server_ip, g_server_port);
+                if (stream_fd < 0) {
+                    // 连接失败则等待并重试，防止死循环卡死
+                    usleep(50000);
+                    continue;
+                }
+            }
+
+            // 只有当 RingBuffer 里的数据够拼满 100ms 一帧时才读出来发送
+            if (g_rb.availableData() >= STREAM_FRAME_PAYLOAD_SIZE) {
+                size_t read_bytes = g_rb.read(out_buf.data(), STREAM_FRAME_PAYLOAD_SIZE);
+                if (read_bytes == STREAM_FRAME_PAYLOAD_SIZE) {
+                    if (stream_send_frame(stream_fd, frame_seq++, out_buf.data(), STREAM_FRAME_PAYLOAD_SIZE) < 0) {
+                        fprintf(stderr, "[Audio-Stream] 发送中断，强行关闭流\n");
+                        stream_close(stream_fd);
+                        stream_fd = -1;
+                    }
+                }
+            } else {
+                // 数据不够一帧，稍作休息，避免空转死锁 CPU
+                usleep(10000);
+            }
+        } else {
+            // 松开按键，进入扫尾阶段
+            if (stream_fd >= 0) {
+                printf("[Audio-Stream] 停止录音，开始清空 RingBuffer 残余数据...\n");
+                // 把 RingBuffer 剩下不足一帧的数据凑成最后一帧发掉
+                while (g_rb.availableData() > 0) {
+                    size_t data_len = g_rb.availableData();
+                    if (data_len > STREAM_FRAME_PAYLOAD_SIZE) {
+                        data_len = STREAM_FRAME_PAYLOAD_SIZE;
+                    }
+                    size_t read_bytes = g_rb.read(out_buf.data(), data_len);
+                    if (read_bytes > 0) {
+                        stream_send_frame(stream_fd, frame_seq++, out_buf.data(), read_bytes);
+                    }
+                }
+
+                stream_close(stream_fd);
+                stream_fd = -1;
+                g_rb.reset(); // 清空 buffer 状态，迎接下一次长按
+                audio_set_file_ready(); // 通知主线程或控制层：流传输已完全结束
+            }
+            usleep(10000);
+        }
+    }
+
+#else
+/* ==========================================
+     * 原有本地 WAV 文件落盘模式
+     * ========================================== */
     std::vector<uint8_t> out_buf(period_size * channel * 2);
     int fd = -1;
 
@@ -115,7 +185,7 @@ void* writer_worker(void* arg)
             usleep(10000);
         }
     }
-
+#endif
     return NULL;
 }
 

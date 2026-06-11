@@ -63,9 +63,82 @@ int send_file_to_server(const char *filename, const char *ip, int port) {
     }
 
     // 6. 清理资源
-    printf("[NET] 上传完成，正在断开连接。\n");
     fclose(fp);
     close(sockfd);
 
     return 0;
 }
+
+#ifdef STREAMING_MODE
+int stream_open(const char *ip, int port) {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("[NET-STREAM] Socket 创建失败");
+        return -1;
+    }
+
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, ip, &serv_addr.sin_addr) <= 0) {
+        fprintf(stderr, "[NET-STREAM] 无效的 IP 地址: %s\n", ip);
+        close(sockfd);
+        return -1;
+    }
+
+    printf("[NET-STREAM] 正在连接实时流服务器 %s:%d...\n", ip, port);
+    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("[NET-STREAM] 连接流服务器失败");
+        close(sockfd);
+        return -1;
+    }
+    printf("[NET-STREAM] 实时流通道建立成功！\n");
+    return sockfd;
+}
+
+int stream_send_frame(int sockfd, uint32_t seq, const uint8_t *payload, uint32_t size) {
+    StreamHeader_t header;
+    header.seq = htonl(seq);                 // 转网络字节序，防止 PC 端和板子端字节序冲突
+    header.timestamp = htonl(seq * 100);     // 伪时间戳，每帧 100ms
+    header.payload_size = htonl(size);
+
+    // 1. 发送帧头
+    uint8_t *head_ptr = (uint8_t *)&header;
+    size_t head_to_send = sizeof(StreamHeader_t);
+    while (head_to_send > 0) {
+        ssize_t sent = send(sockfd, head_ptr, head_to_send, 0);
+        if (sent <= 0) {
+            if (errno == EINTR) continue;
+            perror("[NET-STREAM] 发送帧头失败");
+            return -1;
+        }
+        head_ptr += sent;
+        head_to_send -= sent;
+    }
+
+    // 2. 发送 PCM Payload
+    const uint8_t *data_ptr = payload;
+    size_t data_to_send = size;
+    while (data_to_send > 0) {
+        ssize_t sent = send(sockfd, data_ptr, data_to_send, 0);
+        if (sent <= 0) {
+            if (errno == EINTR) continue;
+            perror("[NET-STREAM] 发送音频数据失败");
+            return -1;
+        }
+        data_ptr += sent;
+        data_to_send -= sent;
+    }
+
+    return 0;
+}
+
+void stream_close(int sockfd) {
+    if (sockfd >= 0) {
+        close(sockfd);
+        printf("[NET-STREAM] 实时流通道已断开。\n");
+    }
+}
+#endif

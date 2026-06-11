@@ -1,3 +1,13 @@
+# 引入流传输开关，默认开启 (ON)
+option(STREAMING_MODE "Enable real-time TCP streaming mode" ON)
+
+if(STREAMING_MODE)
+    add_definitions(-DSTREAMING_MODE)
+    message(STATUS ">>>> 流式传输模式已启用 (STREAMING_MODE = ON) <<<<")
+else()
+    message(STATUS ">>>> 传统本地文件保存模式已启用 (STREAMING_MODE = OFF) <<<<")
+endif()
+
 # 1. 设置头文件路径
 include_directories(${PROJECT_SOURCE_DIR}/libaudio)
 include_directories(${PROJECT_SOURCE_DIR}/libnet)

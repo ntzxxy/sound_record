@@ -54,6 +54,10 @@ void* key_monitor_thread(void* arg)
         else if(key_value == 0)
         {
             audio_stop_recording();
+#ifdef STREAMING_MODE
+            // 流式模式下：只需挂起等待底层把流彻底发送干净、断开即可
+            audio_wait_file_ready();
+#else
             audio_wait_file_ready();
 
             if (g_enable_upload) {
@@ -63,6 +67,7 @@ void* key_monitor_thread(void* arg)
             } else {
                 printf("[APP] 录音完成，文件保存至: %s（上传已禁用）\n", g_filename);
             }
+#endif
         }
     }
     
