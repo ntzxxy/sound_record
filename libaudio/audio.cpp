@@ -7,6 +7,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include "ringbuffer.hpp"
+#include "net.h"
 #include <vector>
 
 // 预设配置定义
@@ -43,7 +44,7 @@ static int g_record_count = 0;
 volatile static int g_file_ready = 0;
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_file_cond = PTHREAD_COND_INITIALIZER;
-static RingBuffer g_rb(128 * 1024);
+static RingBuffer g_rb(256 * 1024);
 
 // 这是从 pcm_capture.c 抽离出来的纯采样逻辑
 void* record_worker(void* arg) {
@@ -82,17 +83,24 @@ void* writer_worker(void* arg)
     int stream_fd = -1;
     uint32_t frame_seq = 0;
 
+    int conn_fail_cnt = 0;
+    bool was_recording = false;
     while (1) {
         if (g_record_run) {
+            was_recording = true;
             // 刚按下按键，连接未建立
             if (stream_fd < 0) {
                 frame_seq = 0;
                 stream_fd = stream_open(g_server_ip, g_server_port);
                 if (stream_fd < 0) {
-                    // 连接失败则等待并重试，防止死循环卡死
+                    if (++conn_fail_cnt == 1) {
+                        fprintf(stderr, "[Audio-Stream] 等待连接 %s:%d ...\n",
+                                g_server_ip, g_server_port);
+                    }
                     usleep(50000);
                     continue;
                 }
+                conn_fail_cnt = 0;
             }
 
             // 只有当 RingBuffer 里的数据够拼满 100ms 一帧时才读出来发送
@@ -106,33 +114,42 @@ void* writer_worker(void* arg)
                     }
                 }
             } else {
-                // 数据不够一帧，稍作休息，避免空转死锁 CPU
                 usleep(10000);
             }
-        } else {
-            // 松开按键，进入扫尾阶段
+        } else if (was_recording) {
+            // 下降沿：松开按键，扫尾阶段（只执行一次）
+            was_recording = false;
             if (stream_fd >= 0) {
-                printf("[Audio-Stream] 停止录音，开始清空 RingBuffer 残余数据...\n");
-                // 把 RingBuffer 剩下不足一帧的数据凑成最后一帧发掉
+                printf("[Audio-Stream] 停止录音，清空缓冲区...\n");
                 while (g_rb.availableData() > 0) {
                     size_t data_len = g_rb.availableData();
-                    if (data_len > frame_size) {
-                        data_len = frame_size;
-                    }
+                    if (data_len > frame_size) data_len = frame_size;
                     size_t read_bytes = g_rb.read(out_buf.data(), data_len);
                     if (read_bytes > 0) {
                         if (stream_send_frame(stream_fd, frame_seq++, out_buf.data(), read_bytes) < 0)
                             break;
                     }
                 }
-
+                // 等待 record_worker in-flight 数据
+                usleep(50000);
+                while (g_rb.availableData() > 0) {
+                    size_t data_len = g_rb.availableData();
+                    if (data_len > frame_size) data_len = frame_size;
+                    size_t read_bytes = g_rb.read(out_buf.data(), data_len);
+                    if (read_bytes > 0)
+                        stream_send_frame(stream_fd, frame_seq++, out_buf.data(), read_bytes);
+                }
                 stream_close(stream_fd);
                 stream_fd = -1;
-                g_rb.reset(); // 清空 buffer 状态，迎接下一次长按
-                audio_set_file_ready(); // 通知主线程或控制层：流传输已完全结束
+                g_rb.reset();
+                printf("[Audio-Stream] 连接断开，流传输结束\n");
+            } else {
+                fprintf(stderr, "[Audio-Stream] 录音结束，未建立连接，无数据发送\n");
+                g_rb.reset();
             }
-            usleep(10000);
+            audio_set_file_ready();
         }
+        usleep(10000);
     }
 
 #else

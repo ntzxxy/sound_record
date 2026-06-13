@@ -37,7 +37,7 @@ int send_file_to_server(const char *filename, const char *ip, int port) {
 
     // 3. 建立连接 (三次握手就在这一步发生)
     printf("[NET] 正在连接服务器 %s:%d...\n", ip, port);
-    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
         perror("[NET] 连接服务器失败");
         close(sockfd);
         return -1;
@@ -88,9 +88,7 @@ int stream_open(const char *ip, int port) {
         return -1;
     }
 
-    printf("[NET-STREAM] 正在连接实时流服务器 %s:%d...\n", ip, port);
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("[NET-STREAM] 连接流服务器失败");
         close(sockfd);
         return -1;
     }
