@@ -4,6 +4,7 @@
 
 #include "stream_receiver.h"
 #include "net.h"
+#include "asr.h"
 #include <iostream>
 #include <vector>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <climits>
 
@@ -59,7 +61,7 @@ static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
 }
 
 // 核心业务函数：Socket 循环解包逻辑
-int start_stream_server(int port, const std::string& save_dir) {
+int start_stream_server(int port, const std::string& save_dir, const std::string& model_dir) {
     // 自动创建保存目录
     if (mkdir(save_dir.c_str(), 0755) != 0 && errno != EEXIST) {
         perror("mkdir 失败");
@@ -87,12 +89,21 @@ int start_stream_server(int port, const std::string& save_dir) {
     std::cout << "[*] 服务已启动，监听端口: " << port << std::endl;
     std::cout << "[*] 录音保存路径: " << display_path << std::endl;
 
+    // 初始化 ASR 引擎
+    if (asr_init(model_dir.c_str()) != 0) {
+        std::cerr << "[ASR] 模型加载失败，请检查路径: " << model_dir << std::endl;
+        return -1;
+    }
+    std::cout << "[ASR] 模型加载成功" << std::endl;
+
     // 2. 主循环：等待开发板的长连接建立
     while (true) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) continue;
+        int one = 1;
+        setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
         std::cout << "[+] 开发板按键按下，长连接流通道已建立。" << std::endl;
 
@@ -131,12 +142,25 @@ int start_stream_server(int port, const std::string& save_dir) {
 
                 // 将本帧解出来的原始 PCM 塞入缓存池
                 pcm_pool.insert(pcm_pool.end(), payload_buf.begin(), payload_buf.end());
+
+                // === ASR 流式识别：每收到一帧就喂给引擎 ===
+                int num_samples = static_cast<int>(payload_size) / 2;
+                asr_process_frame(reinterpret_cast<const int16_t*>(payload_buf.data()), num_samples);
+
+                const char* text = asr_get_result();
+                if (text && text[0] != '\0') {
+                    std::cout << "[ASR] " << text << std::endl;
+                }
             }
         }
 
         // 4. 开发板松开按键，流结束，长连接彻底断开
         close(client_fd);
         std::cout << "[-] 开发板松开按键，流通道断开。" << std::endl;
+
+        // ASR 收尾：输出最终结果并重置，准备下一段语音
+        std::cout << "[ASR] 最终结果: " << asr_get_result() << std::endl;
+        asr_reset();
 
         // 5. 扫尾落盘：将整段话的音频数据封装为 WAV 文件
         if (!pcm_pool.empty()) {
@@ -147,6 +171,7 @@ int start_stream_server(int port, const std::string& save_dir) {
         }
     }
 
+    asr_destroy();
     close(server_fd);
     return 0;
 }
@@ -154,9 +179,11 @@ int start_stream_server(int port, const std::string& save_dir) {
 int main(int argc, char* argv[]) {
     int port = 8080;
     std::string save_dir = "./voice_records";
+    std::string model_dir = "../models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16";
 
     if (argc > 1) port = std::stoi(argv[1]);
     if (argc > 2) save_dir = argv[2];
+    if (argc > 3) model_dir = argv[3];
 
-    return start_stream_server(port, save_dir);
+    return start_stream_server(port, save_dir, model_dir);
 }

@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include "net.h"
 
@@ -92,24 +93,25 @@ int stream_open(const char *ip, int port) {
         close(sockfd);
         return -1;
     }
+    int one = 1;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     printf("[NET-STREAM] 实时流通道建立成功！\n");
     return sockfd;
 }
 
 int stream_send_frame(int sockfd, uint32_t seq, const uint8_t *payload, uint32_t size) {
     StreamHeader_t header;
-    header.seq = htonl(seq);                 // 转网络字节序，防止 PC 端和板子端字节序冲突
-    header.timestamp = htonl(seq * 100);     // 伪时间戳，每帧 100ms
+    header.seq = htonl(seq);
+    header.timestamp = htonl(seq * 100);
     header.payload_size = htonl(size);
 
     // 1. 发送帧头
     uint8_t *head_ptr = (uint8_t *)&header;
     size_t head_to_send = sizeof(StreamHeader_t);
     while (head_to_send > 0) {
-        ssize_t sent = send(sockfd, head_ptr, head_to_send, 0);
+        ssize_t sent = send(sockfd, head_ptr, head_to_send, MSG_NOSIGNAL);
         if (sent <= 0) {
             if (errno == EINTR) continue;
-            perror("[NET-STREAM] 发送帧头失败");
             return -1;
         }
         head_ptr += sent;
@@ -120,10 +122,9 @@ int stream_send_frame(int sockfd, uint32_t seq, const uint8_t *payload, uint32_t
     const uint8_t *data_ptr = payload;
     size_t data_to_send = size;
     while (data_to_send > 0) {
-        ssize_t sent = send(sockfd, data_ptr, data_to_send, 0);
+        ssize_t sent = send(sockfd, data_ptr, data_to_send, MSG_NOSIGNAL);
         if (sent <= 0) {
             if (errno == EINTR) continue;
-            perror("[NET-STREAM] 发送音频数据失败");
             return -1;
         }
         data_ptr += sent;
