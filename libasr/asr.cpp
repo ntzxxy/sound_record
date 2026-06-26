@@ -28,6 +28,12 @@ int asr_init(const char *model_dir) {
     sherpa_onnx::OnlineRecognizerConfig config;
     config.model_config = model;
 
+    // 端点检测：静音 1.0 秒后自动断句，检测到新语音自动重置计时
+    config.enable_endpoint = true;
+    config.endpoint_config.rule1 = sherpa_onnx::EndpointRule(false, 2.4f, 0);
+    config.endpoint_config.rule2 = sherpa_onnx::EndpointRule(true, 1.5f, 0);
+    config.endpoint_config.rule3 = sherpa_onnx::EndpointRule(false, 0, 20.0f);
+
     g_recognizer = std::make_unique<sherpa_onnx::OnlineRecognizer>(config);
     g_stream = g_recognizer->CreateStream();
 

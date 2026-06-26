@@ -112,6 +112,7 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
         bool first_frame = true;
 
         // 3. 次级循环：在长连接没有断开前，源源不断地进行【帧头 + 负载】的解包流转
+        std::string last_text;
         while (true) {
             StreamHeader_t header;
 
@@ -147,9 +148,17 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
                 int num_samples = static_cast<int>(payload_size) / 2;
                 asr_process_frame(reinterpret_cast<const int16_t*>(payload_buf.data()), num_samples);
 
+                // 只在文字变化时输出，避免刷屏
                 const char* text = asr_get_result();
-                if (text && text[0] != '\0') {
+                if (text && text[0] != '\0' && last_text != text) {
+                    last_text = text;
                     std::cout << "[ASR] " << text << std::endl;
+                }
+
+                // 检测到停顿后自动断句
+                if (asr_is_endpoint()) {
+                    asr_reset();
+                    last_text.clear();
                 }
             }
         }
@@ -158,8 +167,6 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
         close(client_fd);
         std::cout << "[-] 开发板松开按键，流通道断开。" << std::endl;
 
-        // ASR 收尾：输出最终结果并重置，准备下一段语音
-        std::cout << "[ASR] 最终结果: " << asr_get_result() << std::endl;
         asr_reset();
 
         // 5. 扫尾落盘：将整段话的音频数据封装为 WAV 文件
