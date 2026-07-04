@@ -5,6 +5,7 @@
 #include "stream_receiver.h"
 #include "net.h"
 #include "asr.h"
+#include "chat_agent.h"
 #include <iostream>
 #include <vector>
 #include <fstream>
@@ -60,8 +61,29 @@ static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
     return bytes_read;
 }
 
+static std::string g_response_buf;  // 累积一轮回复，用于检测拒绝
+
+static void agent_callback(const char* text, int is_final) {
+    if (text && text[0] != '\0') {
+        std::cout << text << std::flush;
+        g_response_buf += text;
+    }
+    if (is_final) {
+        std::cout << std::endl;
+        // 检测到模型拒绝回答时，清掉有毒上下文，下轮重新开始
+        if (g_response_buf.find("对不起") != std::string::npos ||
+            g_response_buf.find("我还没有学会") != std::string::npos) {
+            std::cerr << "[Agent] 检测到拒绝回答，重置上下文" << std::endl;
+            agent_reset();
+        }
+        g_response_buf.clear();
+    }
+}
+
 // 核心业务函数：Socket 循环解包逻辑
-int start_stream_server(int port, const std::string& save_dir, const std::string& model_dir) {
+int start_stream_server(int port, const std::string& save_dir,
+                        const std::string& model_dir,
+                        const std::string& llm_model_path) {
     // 自动创建保存目录
     if (mkdir(save_dir.c_str(), 0755) != 0 && errno != EEXIST) {
         perror("mkdir 失败");
@@ -95,6 +117,18 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
         return -1;
     }
     std::cout << "[ASR] 模型加载成功" << std::endl;
+
+    // 初始化对话代理（内部加载 LLM 模型）
+    if (!llm_model_path.empty()) {
+        if (agent_init(llm_model_path.c_str(), nullptr) != 0) {
+            std::cerr << "[Agent] 模型加载失败，请检查路径: " << llm_model_path << std::endl;
+            asr_destroy();
+            return -1;
+        }
+        std::cout << "[Agent] 模型加载成功" << std::endl;
+    } else {
+        std::cout << "[Agent] 未指定模型路径，跳过初始化（仅 ASR 模式）" << std::endl;
+    }
 
     // 2. 主循环：等待开发板的长连接建立
     while (true) {
@@ -157,6 +191,13 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
 
                 // 检测到停顿后自动断句
                 if (asr_is_endpoint()) {
+                    if (!last_text.empty()) {
+                        std::cout << "[ASR] 断句完成: " << last_text << std::endl;
+                        if (!llm_model_path.empty()) {
+                            std::cout << "[Agent] " << std::flush;
+                            agent_chat(last_text.c_str(), agent_callback);
+                        }
+                    }
                     asr_reset();
                     last_text.clear();
                 }
@@ -168,6 +209,8 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
         std::cout << "[-] 开发板松开按键，流通道断开。" << std::endl;
 
         asr_reset();
+        // 一次按键对话结束，重置 LLM 上下文，下次按键开始新一轮
+        if (!llm_model_path.empty()) agent_reset();
 
         // 5. 扫尾落盘：将整段话的音频数据封装为 WAV 文件
         if (!pcm_pool.empty()) {
@@ -179,6 +222,7 @@ int start_stream_server(int port, const std::string& save_dir, const std::string
     }
 
     asr_destroy();
+    if (!llm_model_path.empty()) agent_destroy();
     close(server_fd);
     return 0;
 }
@@ -187,10 +231,12 @@ int main(int argc, char* argv[]) {
     int port = 8080;
     std::string save_dir = "./voice_records";
     std::string model_dir = "../models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16";
+    std::string llm_model_path;  // 默认空，仅 ASR 模式
 
     if (argc > 1) port = std::stoi(argv[1]);
     if (argc > 2) save_dir = argv[2];
     if (argc > 3) model_dir = argv[3];
+    if (argc > 4) llm_model_path = argv[4];
 
-    return start_stream_server(port, save_dir, model_dir);
+    return start_stream_server(port, save_dir, model_dir, llm_model_path);
 }

@@ -6,16 +6,18 @@ PORT=${1:-8080}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/cmake-build-wsl-local"
 MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16"
+LLM_MODEL="${SCRIPT_DIR}/models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
 
 cd "${BUILD_DIR}"
 mkdir -p "${SAVE_DIR}"
 
 echo "========================================="
-echo "  ASR 流式识别服务"
+echo "  ASR + LLM 流式识别与对话服务"
 echo "  端口: ${PORT}"
-echo "  模型: ${MODEL_DIR}"
+echo "  ASR模型: ${MODEL_DIR}"
+echo "  LLM模型: ${LLM_MODEL}"
 echo "  录音: ${SAVE_DIR}"
 echo "========================================="
 
-./bin/stream_receiver "${PORT}" "${SAVE_DIR}" "${MODEL_DIR}"
+./bin/stream_receiver "${PORT}" "${SAVE_DIR}" "${MODEL_DIR}" "${LLM_MODEL}"

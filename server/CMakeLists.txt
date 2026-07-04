@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.17)
 
 # 启用 C++11 标准
 set(CMAKE_CXX_STANDARD 11)
@@ -14,10 +14,11 @@ add_executable(stream_receiver stream_receiver.cpp)
 target_include_directories(stream_receiver PRIVATE
     ${PROJECT_SOURCE_DIR}/libnet
     ${PROJECT_SOURCE_DIR}/libasr
+    ${PROJECT_SOURCE_DIR}/libllm
 )
 
-# 链接 ASR 模块
-target_link_libraries(stream_receiver PRIVATE asr)
+# 链接 ASR 和 LLM 模块
+target_link_libraries(stream_receiver PRIVATE asr llm)
 
 # 构建提示信息
 message(STATUS ">>>> 服务端 C++ 流式解析验证程序已就绪 <<<<")

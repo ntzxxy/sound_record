@@ -31,6 +31,17 @@ if(BUILD_ASR)
     add_subdirectory(libasr)
 endif()
 
+# LLM 引擎仅在 PC/Jetson 时构建
+option(BUILD_LLM "Build llama.cpp LLM engine" ON)
+if(BUILD_LLM AND CMAKE_CROSSCOMPILING)
+    message(STATUS ">>>> 交叉编译环境，跳过 llama.cpp（仅限 PC 端使用）<<<<")
+    set(BUILD_LLM OFF)
+endif()
+if(BUILD_LLM)
+    add_subdirectory(third_party/llama.cpp)
+    add_subdirectory(libllm)
+endif()
+
 # PC 端 server 只在使用 x86 原生编译器时才构建，arm 交叉编译时自动跳过
 option(BUILD_SERVER "Build the PC-side stream receiver" ON)
 if(BUILD_SERVER AND CMAKE_CROSSCOMPILING)
