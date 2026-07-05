@@ -6,7 +6,12 @@
 #include "net.h"
 #include "asr.h"
 #include "chat_agent.h"
+#include <atomic>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
+#include <queue>
+#include <thread>
 #include <vector>
 #include <fstream>
 #include <ctime>
@@ -61,22 +66,48 @@ static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
     return bytes_read;
 }
 
-static std::string g_response_buf;  // 累积一轮回复，用于检测拒绝
-
 static void agent_callback(const char* text, int is_final) {
-    if (text && text[0] != '\0') {
+    if (text && text[0] != '\0')
         std::cout << text << std::flush;
-        g_response_buf += text;
-    }
-    if (is_final) {
+    if (is_final)
         std::cout << std::endl;
-        // 检测到模型拒绝回答时，清掉有毒上下文，下轮重新开始
-        if (g_response_buf.find("对不起") != std::string::npos ||
-            g_response_buf.find("我还没有学会") != std::string::npos) {
-            std::cerr << "[Agent] 检测到拒绝回答，重置上下文" << std::endl;
-            agent_reset();
+}
+
+// ===================================================================
+// 异步 LLM 推理：任务队列 + 工作线程
+// 主线负责收音频+ASR，LLM 线程负责推理，两不阻塞
+// ===================================================================
+struct ChatTask {
+    std::string text;
+    bool is_reset;  // true = 重置上下文，false = 正常对话
+};
+
+static std::queue<ChatTask> g_task_queue;
+static std::mutex            g_queue_mutex;
+static std::condition_variable g_queue_cv;
+static std::atomic<bool>     g_llm_running{true};
+static std::thread           g_llm_thread;
+
+static void llm_worker() {
+    while (g_llm_running) {
+        ChatTask task;
+        {
+            std::unique_lock<std::mutex> lock(g_queue_mutex);
+            g_queue_cv.wait(lock, [] {
+                return !g_task_queue.empty() || !g_llm_running;     //Lambda 表达式,防御“虚假唤醒”
+            });
+            if (!g_llm_running && g_task_queue.empty())
+                break;
+            task = std::move(g_task_queue.front());     //移动语义,实现零拷贝拿到队列任务值
+            g_task_queue.pop();
         }
-        g_response_buf.clear();
+
+        if (task.is_reset) {
+            agent_reset();
+        } else {
+            std::cout << "[Agent] " << std::flush;
+            agent_chat(task.text.c_str(), agent_callback);
+        }
     }
 }
 
@@ -126,6 +157,9 @@ int start_stream_server(int port, const std::string& save_dir,
             return -1;
         }
         std::cout << "[Agent] 模型加载成功" << std::endl;
+        // 启动 LLM 异步推理线程
+        g_llm_thread = std::thread(llm_worker);
+        std::cout << "[Agent] LLM 异步推理线程已启动" << std::endl;
     } else {
         std::cout << "[Agent] 未指定模型路径，跳过初始化（仅 ASR 模式）" << std::endl;
     }
@@ -189,13 +223,16 @@ int start_stream_server(int port, const std::string& save_dir,
                     std::cout << "[ASR] " << text << std::endl;
                 }
 
-                // 检测到停顿后自动断句
+                // 检测到停顿后自动断句 → 推送任务到 LLM 异步线程
                 if (asr_is_endpoint()) {
                     if (!last_text.empty()) {
                         std::cout << "[ASR] 断句完成: " << last_text << std::endl;
                         if (!llm_model_path.empty()) {
-                            std::cout << "[Agent] " << std::flush;
-                            agent_chat(last_text.c_str(), agent_callback);
+                            {
+                                std::lock_guard<std::mutex> lock(g_queue_mutex);    //生命周期内无法手动解除锁
+                                g_task_queue.push({last_text, false});
+                            }
+                            g_queue_cv.notify_one();
                         }
                     }
                     asr_reset();
@@ -209,8 +246,16 @@ int start_stream_server(int port, const std::string& save_dir,
         std::cout << "[-] 开发板松开按键，流通道断开。" << std::endl;
 
         asr_reset();
-        // 一次按键对话结束，重置 LLM 上下文，下次按键开始新一轮
-        if (!llm_model_path.empty()) agent_reset();
+        // 清除待处理队列 + 推送 reset 到 LLM 线程
+        if (!llm_model_path.empty()) {
+            {
+                std::lock_guard<std::mutex> lock(g_queue_mutex);
+                while (!g_task_queue.empty())
+                    g_task_queue.pop();
+                g_task_queue.push({"", true});
+            }
+            g_queue_cv.notify_one();
+        }
 
         // 5. 扫尾落盘：将整段话的音频数据封装为 WAV 文件
         if (!pcm_pool.empty()) {
@@ -222,7 +267,12 @@ int start_stream_server(int port, const std::string& save_dir,
     }
 
     asr_destroy();
-    if (!llm_model_path.empty()) agent_destroy();
+    if (!llm_model_path.empty()) {
+        g_llm_running = false;
+        g_queue_cv.notify_one();
+        if (g_llm_thread.joinable()) g_llm_thread.join();
+        agent_destroy();
+    }
     close(server_fd);
     return 0;
 }

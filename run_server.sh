@@ -6,7 +6,7 @@ PORT=${1:-8080}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/cmake-build-wsl-local"
 MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16"
-LLM_MODEL="${SCRIPT_DIR}/models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
+LLM_MODEL="${SCRIPT_DIR}/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
 
 cd "${BUILD_DIR}"
