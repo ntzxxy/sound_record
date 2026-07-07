@@ -29,6 +29,7 @@ endif()
 if(BUILD_ASR)
     add_subdirectory(third_party/sherpa-onnx)
     add_subdirectory(libasr)
+    add_subdirectory(libtts)
 endif()
 
 # LLM 引擎仅在 PC/Jetson 时构建
