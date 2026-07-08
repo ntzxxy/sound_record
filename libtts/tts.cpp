@@ -50,7 +50,9 @@ int tts_init(const char *model_dir) {
         config.model.supertonic.voice_style        = base + "/voice.bin";
         fprintf(stderr, "[TTS] 检测到 Supertonic 模型\n");
     } else {
-        std::string model  = base + "/model.onnx";
+        // 优先用 INT8 模型（52MB，3x 快），否则用 FP32（163MB）
+        std::string model  = base + "/model.int8.onnx";
+        if (!file_exists(model)) model = base + "/model.onnx";
         std::string tokens = base + "/tokens.txt";
         if (!file_exists(model) || !file_exists(tokens)) {
             fprintf(stderr, "[TTS] 未找到 model.onnx/tokens.txt 或 tts.json\n");

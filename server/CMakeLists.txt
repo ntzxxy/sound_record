@@ -15,10 +15,12 @@ target_include_directories(stream_receiver PRIVATE
     ${PROJECT_SOURCE_DIR}/libnet
     ${PROJECT_SOURCE_DIR}/libasr
     ${PROJECT_SOURCE_DIR}/libllm
+    ${PROJECT_SOURCE_DIR}/libtts
+    ${PROJECT_SOURCE_DIR}/libaudio
 )
 
-# 链接 ASR 和 LLM 模块
-target_link_libraries(stream_receiver PRIVATE asr llm)
+# 链接 ASR、LLM、TTS、AudioPlayer 模块
+target_link_libraries(stream_receiver PRIVATE asr llm tts audio_lib asound pthread)
 
 # 构建提示信息
 message(STATUS ">>>> 服务端 C++ 流式解析验证程序已就绪 <<<<")

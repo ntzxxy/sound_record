@@ -1,15 +1,19 @@
 # libtts —— TTS 语音合成封装模块
 # 依赖 sherpa-onnx，仅在 BUILD_ASR=ON 时编译（共用 sherpa-onnx）
+#编入静态库
+add_library(tts STATIC tts.cpp tts_model.cpp tts_queue.cpp tts_pipeline.cpp)
 
-add_library(tts STATIC tts.cpp)
-
+#设置头文件包含路径
 target_include_directories(tts PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/sherpa-onnx
+    ${CMAKE_SOURCE_DIR}/libaudio
 )
 
 target_link_libraries(tts PUBLIC
     sherpa-onnx-core
+    audio_lib
+    pthread
 )
 
 # 测试程序：验证 TTS 模型加载与合成

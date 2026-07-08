@@ -6,7 +6,9 @@
 #include "net.h"
 #include "asr.h"
 #include "chat_agent.h"
+#include "tts_pipeline.h"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
@@ -24,7 +26,6 @@
 #include <arpa/inet.h>
 #include <climits>
 
-// 辅助函数 A：在流结束时，将累积的原始 PCM 数据裹上 44 字节的 WAV 头，变成标准音频文件
 static void save_wav_file(const std::string& filename, const std::vector<uint8_t>& pcm_data, uint32_t sample_rate, uint16_t channels) {
     std::ofstream ofs(filename, std::ios::binary);
     if (!ofs.is_open()) return;
@@ -44,127 +45,114 @@ static void save_wav_file(const std::string& filename, const std::vector<uint8_t
     std::memcpy(header.Subchunk2ID, "data", 4);
     header.Subchunk2Size = pcm_data.size();
 
-    ofs.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader_t)); // 先写 44 字节头
-    ofs.write(reinterpret_cast<const char*>(pcm_data.data()), pcm_data.size()); // 再写原始 PCM 字节
+    ofs.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader_t));
+    ofs.write(reinterpret_cast<const char*>(pcm_data.data()), pcm_data.size());
     ofs.close();
     std::cout << "[OK] 音频解析落盘成功: " << filename << std::endl;
 }
 
-// 辅助函数 B：TCP 是流式传输，recv 可能会产生拆包（一次没读够指定大小）。这个函数保证"不读够指定大小不返回"。
 static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
     size_t bytes_read = 0;
     while (bytes_read < size) {
         ssize_t ret = recv(fd, buf + bytes_read, size - bytes_read, 0);
         if (ret < 0) {
-            if (errno == EINTR) continue; // 信号中断则重试
+            if (errno == EINTR) continue;
             return -1;
         }
-        if (ret == 0)
-            return bytes_read; // 对端正常断开了长连接
+        if (ret == 0) return bytes_read;
         bytes_read += ret;
     }
     return bytes_read;
 }
 
-static void agent_callback(const char* text, int is_final) {
-    if (text && text[0] != '\0')
-        std::cout << text << std::flush;
-    if (is_final)
-        std::cout << std::endl;
-}
-
 // ===================================================================
-// 异步 LLM 推理：任务队列 + 工作线程
-// 主线负责收音频+ASR，LLM 线程负责推理，两不阻塞
+// LLM 异步推理线程
 // ===================================================================
-struct ChatTask {
-    std::string text;
-    bool is_reset;  // true = 重置上下文，false = 正常对话
-};
+struct ChatTask { std::string text; bool is_reset; };
 
-static std::queue<ChatTask> g_task_queue;
-static std::mutex            g_queue_mutex;
+static std::queue<ChatTask>    g_task_queue;
+static std::mutex              g_queue_mutex;
 static std::condition_variable g_queue_cv;
-static std::atomic<bool>     g_llm_running{true};
-static std::thread           g_llm_thread;
+static std::atomic<bool>       g_llm_running{true};
+static std::thread             g_llm_thread;
 
 static void llm_worker() {
     while (g_llm_running) {
         ChatTask task;
         {
             std::unique_lock<std::mutex> lock(g_queue_mutex);
-            g_queue_cv.wait(lock, [] {
-                return !g_task_queue.empty() || !g_llm_running;     //Lambda 表达式,防御“虚假唤醒”
-            });
-            if (!g_llm_running && g_task_queue.empty())
-                break;
-            task = std::move(g_task_queue.front());     //移动语义,实现零拷贝拿到队列任务值
+            g_queue_cv.wait(lock, [] { return !g_task_queue.empty() || !g_llm_running; });
+            if (!g_llm_running && g_task_queue.empty()) break;
+            task = std::move(g_task_queue.front());
             g_task_queue.pop();
         }
+        if (task.is_reset) { agent_reset(); continue; }
 
-        if (task.is_reset) {
-            agent_reset();
-        } else {
-            std::cout << "[Agent] " << std::flush;
-            agent_chat(task.text.c_str(), agent_callback);
-        }
+        // LLM 回调：打印 + 推送到 TTS 管线
+        // LLM→TTS：全文生成后一次性推送
+        std::cout << "[Agent] " << std::flush;
+        static std::string g_full;
+        g_full.clear();
+        agent_chat(task.text.c_str(), [](const char *text, int is_final) {
+            if (text && text[0]) { std::cout << text << std::flush; g_full += text; }
+            if (is_final) {
+                std::cout << std::endl;
+                if (!g_full.empty()) tts_pipeline_push(g_full.c_str());
+            }
+        });
     }
 }
 
-// 核心业务函数：Socket 循环解包逻辑
+// ===================================================================
+// 核心业务
+// ===================================================================
 int start_stream_server(int port, const std::string& save_dir,
                         const std::string& model_dir,
-                        const std::string& llm_model_path) {
-    // 自动创建保存目录
+                        const std::string& llm_model_path,
+                        const std::string& tts_model_path) {
     if (mkdir(save_dir.c_str(), 0755) != 0 && errno != EEXIST) {
-        perror("mkdir 失败");
-        return -1;
+        perror("mkdir 失败"); return -1;
     }
     char abs_path[PATH_MAX];
     const char* display_path = realpath(save_dir.c_str(), abs_path) ? abs_path : save_dir.c_str();
 
-    // 1. 标准网络 Socket 初始化
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); // 端口复用保护
-
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in address;
     std::memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
-
     if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0 || listen(server_fd, 5) < 0) {
-        perror("网络初始化失败");
-        return -1;
+        perror("网络初始化失败"); return -1;
     }
-
     std::cout << "[*] 服务已启动，监听端口: " << port << std::endl;
     std::cout << "[*] 录音保存路径: " << display_path << std::endl;
 
-    // 初始化 ASR 引擎
     if (asr_init(model_dir.c_str()) != 0) {
-        std::cerr << "[ASR] 模型加载失败，请检查路径: " << model_dir << std::endl;
+        std::cerr << "[ASR] 模型加载失败: " << model_dir << std::endl;
         return -1;
     }
     std::cout << "[ASR] 模型加载成功" << std::endl;
 
-    // 初始化对话代理（内部加载 LLM 模型）
     if (!llm_model_path.empty()) {
         if (agent_init(llm_model_path.c_str(), nullptr) != 0) {
-            std::cerr << "[Agent] 模型加载失败，请检查路径: " << llm_model_path << std::endl;
-            asr_destroy();
-            return -1;
+            std::cerr << "[Agent] 模型加载失败: " << llm_model_path << std::endl;
+            asr_destroy(); return -1;
         }
-        std::cout << "[Agent] 模型加载成功" << std::endl;
-        // 启动 LLM 异步推理线程
         g_llm_thread = std::thread(llm_worker);
-        std::cout << "[Agent] LLM 异步推理线程已启动" << std::endl;
-    } else {
-        std::cout << "[Agent] 未指定模型路径，跳过初始化（仅 ASR 模式）" << std::endl;
+        std::cout << "[Agent] 模型加载成功, LLM线程已启动" << std::endl;
     }
 
-    // 2. 主循环：等待开发板的长连接建立
+    if (!tts_model_path.empty()) {
+        std::string tts_save = std::string(display_path) + "/../voice_answers";
+        mkdir(tts_save.c_str(), 0755);
+        if (tts_pipeline_init(tts_model_path.c_str(), tts_save.c_str()) == 0) {
+            std::cout << "[TTS] 管线已启动, WAV保存: " << tts_save << std::endl;
+        }
+    }
+
     while (true) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
@@ -172,66 +160,68 @@ int start_stream_server(int port, const std::string& save_dir,
         if (client_fd < 0) continue;
         int one = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-
         std::cout << "[+] 开发板按键按下，长连接流通道已建立。" << std::endl;
 
-        std::vector<uint8_t> pcm_pool; // 用来暂存整条语音的所有原始 PCM 字节
+        std::vector<uint8_t> pcm_pool;
         uint32_t expected_seq = 0;
         bool first_frame = true;
-
-        // 3. 次级循环：在长连接没有断开前，源源不断地进行【帧头 + 负载】的解包流转
         std::string last_text;
+
         while (true) {
             StreamHeader_t header;
-
-            // 步骤一：先雷打不动地从网络上读 12 字节的"固定帧头"
             ssize_t ret = read_all(client_fd, reinterpret_cast<uint8_t*>(&header), sizeof(StreamHeader_t));
-            if (ret <= 0) break; // 板子松开按键，连接关闭，自然跳出循环
+            if (ret <= 0) break;
 
-            // 步骤二：使用 ntohl 转换字节序 (网络大端转主机小端)，获取里面的帧信息
             uint32_t seq = ntohl(header.seq);
-            uint32_t timestamp = ntohl(header.timestamp);
             uint32_t payload_size = ntohl(header.payload_size);
-
-            // 步骤三：质量监控，校验网络丢包情况
-            if (first_frame) {
-                expected_seq = seq;
-                first_frame = false;
-            }
-            else if (seq != expected_seq) {
-                std::cerr << "[Warning] 网络发生丢包! 期望 seq: " << expected_seq << ", 实际收到: " << seq << std::endl;
-            }
+            if (first_frame) { expected_seq = seq; first_frame = false; }
+            else if (seq != expected_seq)
+                std::cerr << "[Warning] 丢包! 期望:" << expected_seq << " 实际:" << seq << std::endl;
             expected_seq = seq + 1;
 
-            // 步骤四：根据帧头里指定的 payload_size，从网络上精准读取紧跟在后面的 PCM 数据字节
             if (payload_size > 0) {
                 std::vector<uint8_t> payload_buf(payload_size);
                 ret = read_all(client_fd, payload_buf.data(), payload_size);
                 if (ret < static_cast<ssize_t>(payload_size)) break;
-
-                // 将本帧解出来的原始 PCM 塞入缓存池
                 pcm_pool.insert(pcm_pool.end(), payload_buf.begin(), payload_buf.end());
 
-                // === ASR 流式识别：每收到一帧就喂给引擎 ===
                 int num_samples = static_cast<int>(payload_size) / 2;
-                asr_process_frame(reinterpret_cast<const int16_t*>(payload_buf.data()), num_samples);
 
-                // 只在文字变化时输出，避免刷屏
-                const char* text = asr_get_result();
-                if (text && text[0] != '\0' && last_text != text) {
-                    last_text = text;
-                    std::cout << "[ASR] " << text << std::endl;
+                // === 回声防护状态机 ===
+                static bool g_was_busy = false;
+                // TTS 刚开始 → 清 ASR 回声
+                if (!tts_model_path.empty() && tts_pipeline_is_busy() && !g_was_busy) {
+                    asr_reset(); last_text.clear(); g_was_busy = true;
+                }
+                // TTS 刚结束 → 清 ASR 积压回声 + 标记冷却时间
+                static auto g_cooldown_until = std::chrono::steady_clock::now();
+                if (g_was_busy && !tts_pipeline_is_busy()) {
+                    asr_reset(); last_text.clear(); g_was_busy = false;
+                    g_cooldown_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
                 }
 
-                // 检测到停顿后自动断句 → 推送任务到 LLM 异步线程
+                // 始终喂帧到 ASR（保持热机），冷却期内丢弃端点
+                asr_process_frame(reinterpret_cast<const int16_t*>(payload_buf.data()), num_samples);
+
+                const char* text = asr_get_result();
+                bool in_cooldown = (std::chrono::steady_clock::now() < g_cooldown_until);
+                if (text && text[0] && last_text != text) {
+                    last_text = text;
+                    if (!tts_model_path.empty() && (tts_pipeline_is_busy() || in_cooldown))
+                        {} // 回声/冷却期，不打印
+                    else
+                        std::cout << "[ASR] " << text << std::endl;
+                }
+
                 if (asr_is_endpoint()) {
                     if (!last_text.empty()) {
                         std::cout << "[ASR] 断句完成: " << last_text << std::endl;
-                        if (!llm_model_path.empty()) {
-                            {
-                                std::lock_guard<std::mutex> lock(g_queue_mutex);    //生命周期内无法手动解除锁
-                                g_task_queue.push({last_text, false});
-                            }
+                        if (!tts_model_path.empty() && (tts_pipeline_is_busy() || in_cooldown)) {
+                            if (in_cooldown) std::cout << "[TTS] 冷却期，忽略此句" << std::endl;
+                            else            std::cout << "[TTS] 播放中，忽略此句" << std::endl;
+                        } else if (!llm_model_path.empty()) {
+                            { std::lock_guard<std::mutex> lk(g_queue_mutex);
+                              g_task_queue.push({last_text, false}); }
                             g_queue_cv.notify_one();
                         }
                     }
@@ -241,38 +231,33 @@ int start_stream_server(int port, const std::string& save_dir,
             }
         }
 
-        // 4. 开发板松开按键，流结束，长连接彻底断开
         close(client_fd);
         std::cout << "[-] 开发板松开按键，流通道断开。" << std::endl;
-
         asr_reset();
-        // 清除待处理队列 + 推送 reset 到 LLM 线程
+
         if (!llm_model_path.empty()) {
-            {
-                std::lock_guard<std::mutex> lock(g_queue_mutex);
-                while (!g_task_queue.empty())
-                    g_task_queue.pop();
-                g_task_queue.push({"", true});
-            }
+            { std::lock_guard<std::mutex> lk(g_queue_mutex);
+              while (!g_task_queue.empty()) g_task_queue.pop();
+              g_task_queue.push({"", true}); }
             g_queue_cv.notify_one();
         }
+        if (!tts_model_path.empty()) tts_pipeline_interrupt();
 
-        // 5. 扫尾落盘：将整段话的音频数据封装为 WAV 文件
         if (!pcm_pool.empty()) {
             char time_buf[64];
             std::time_t t = std::time(nullptr);
             std::strftime(time_buf, sizeof(time_buf), "voice_%Y%m%d_%H%M%S.wav", std::localtime(&t));
-            save_wav_file(save_dir + "/" + time_buf, pcm_pool, 16000, 1); // 默认 16000Hz 单声道
+            save_wav_file(save_dir + "/" + time_buf, pcm_pool, 16000, 1);
         }
     }
 
     asr_destroy();
     if (!llm_model_path.empty()) {
-        g_llm_running = false;
-        g_queue_cv.notify_one();
+        g_llm_running = false; g_queue_cv.notify_one();
         if (g_llm_thread.joinable()) g_llm_thread.join();
         agent_destroy();
     }
+    if (!tts_model_path.empty()) tts_pipeline_destroy();
     close(server_fd);
     return 0;
 }
@@ -281,12 +266,14 @@ int main(int argc, char* argv[]) {
     int port = 8080;
     std::string save_dir = "./voice_records";
     std::string model_dir = "../models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16";
-    std::string llm_model_path;  // 默认空，仅 ASR 模式
+    std::string llm_model_path;
+    std::string tts_model_path;
 
     if (argc > 1) port = std::stoi(argv[1]);
     if (argc > 2) save_dir = argv[2];
     if (argc > 3) model_dir = argv[3];
     if (argc > 4) llm_model_path = argv[4];
+    if (argc > 5) tts_model_path = argv[5];
 
-    return start_stream_server(port, save_dir, model_dir, llm_model_path);
+    return start_stream_server(port, save_dir, model_dir, llm_model_path, tts_model_path);
 }

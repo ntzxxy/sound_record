@@ -20,6 +20,9 @@ static int g_total_tokens = 0;  // 追踪上下文中的 token 总数
 // ======================================================================
 
 int llm_init(const char *model_path) {
+    // 抑制 CUDA graph 等 DEBUG 日志
+    ggml_log_set([](enum ggml_log_level, const char *, void *) {}, nullptr);
+
     // 1. 加载 GPU/CPU 后端
     ggml_backend_load_all();
 

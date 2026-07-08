@@ -27,6 +27,7 @@ typedef struct {
 
 int start_stream_server(int port, const std::string& save_dir,
                        const std::string& asr_model_dir,
-                       const std::string& llm_model_path);
+                       const std::string& llm_model_path,
+                       const std::string& tts_model_path);
 
 #endif //STREAM_RECEIVER_H
