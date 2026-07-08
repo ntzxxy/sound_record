@@ -1,5 +1,6 @@
 #include "tts.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -10,14 +11,10 @@
 
 static std::unique_ptr<sherpa_onnx::OfflineTts> g_tts;
 static int32_t g_sample_rate = 0;
-
-// 桥接：sherpa-onnx float 回调 → 用户 int16 回调
 static thread_local tts_callback_t g_user_callback = nullptr;
 
 static int32_t bridge_callback(const float *samples, int32_t n, float progress) {
     if (!g_user_callback || !samples || n <= 0) return 1;
-
-    // float → int16 转换（sherpa-onnx 输出 [-1, 1] 范围的 float）
     std::vector<int16_t> pcm(n);
     for (int32_t i = 0; i < n; i++) {
         float s = samples[i];
@@ -25,36 +22,59 @@ static int32_t bridge_callback(const float *samples, int32_t n, float progress) 
         if (s < -1.0f) s = -1.0f;
         pcm[i] = static_cast<int16_t>(s * 32767.0f);
     }
-
     g_user_callback(pcm.data(), n, progress);
-    return 1;  // 继续生成
+    return 1;
+}
+
+static bool file_exists(const std::string& path) {
+    FILE *f = fopen(path.c_str(), "rb");
+    if (f) { fclose(f); return true; }
+    return false;
 }
 
 int tts_init(const char *model_dir) {
     std::string base = model_dir;
-    std::string model_path  = base + "/model.onnx";
-    std::string tokens_path = base + "/tokens.txt";
-
-    // 检查模型文件是否存在
-    FILE *f = fopen(model_path.c_str(), "rb");
-    if (!f) {
-        fprintf(stderr, "[TTS] 模型文件不存在: %s\n", model_path.c_str());
-        return -1;
-    }
-    fclose(f);
-    f = fopen(tokens_path.c_str(), "rb");
-    if (!f) {
-        fprintf(stderr, "[TTS] tokens 文件不存在: %s\n", tokens_path.c_str());
-        return -1;
-    }
-    fclose(f);
-
     sherpa_onnx::OfflineTtsConfig config;
-    config.model.vits.model  = model_path;
-    config.model.vits.tokens = tokens_path;
     config.model.num_threads = 1;
     config.model.provider    = "cpu";
-    config.model.debug       = false;
+    config.max_num_sentences = -1;  // -1 = 不限制句数，避免多句文本被截断
+
+    // 自动检测模型类型：tts.json → Supertonic，否则 VITS/Matcha
+    if (file_exists(base + "/tts.json")) {
+        config.model.supertonic.duration_predictor = base + "/duration_predictor.int8.onnx";
+        config.model.supertonic.text_encoder       = base + "/text_encoder.int8.onnx";
+        config.model.supertonic.vector_estimator   = base + "/vector_estimator.int8.onnx";
+        config.model.supertonic.vocoder            = base + "/vocoder.int8.onnx";
+        config.model.supertonic.tts_json           = base + "/tts.json";
+        config.model.supertonic.unicode_indexer    = base + "/unicode_indexer.bin";
+        config.model.supertonic.voice_style        = base + "/voice.bin";
+        fprintf(stderr, "[TTS] 检测到 Supertonic 模型\n");
+    } else {
+        std::string model  = base + "/model.onnx";
+        std::string tokens = base + "/tokens.txt";
+        if (!file_exists(model) || !file_exists(tokens)) {
+            fprintf(stderr, "[TTS] 未找到 model.onnx/tokens.txt 或 tts.json\n");
+            return -1;
+        }
+        config.model.vits.model  = model;
+        config.model.vits.tokens = tokens;
+
+        // 可选：中文 lexicon 和 dict
+        if (file_exists(base + "/lexicon.txt"))
+            config.model.vits.lexicon = base + "/lexicon.txt";
+        if (file_exists(base + "/dict"))
+            config.model.vits.dict_dir = base + "/dict";
+
+        // 可选：FST 规则文件（数字/日期/电话号码等正则）
+        std::string fsts;
+        for (const char *f : {"date.fst", "number.fst", "phone.fst", "new_heteronym.fst"}) {
+            if (file_exists(base + "/" + f))
+                fsts += (fsts.empty() ? "" : ",") + base + "/" + f;
+        }
+        if (!fsts.empty()) config.rule_fsts = fsts;
+
+        fprintf(stderr, "[TTS] 检测到 VITS/Matcha 模型\n");
+    }
 
     try {
         g_tts = std::make_unique<sherpa_onnx::OfflineTts>(config);
@@ -69,27 +89,23 @@ int tts_init(const char *model_dir) {
 
 int tts_speak(const char *text, tts_callback_t callback) {
     if (!g_tts || !text || !text[0] || !callback) return -1;
-
     g_user_callback = callback;
-    std::string input(text);
-
     try {
-        g_tts->Generate(input, /*sid=*/0, /*speed=*/1.0, bridge_callback);
+        sherpa_onnx::GenerationConfig gen_cfg;
+        gen_cfg.extra["lang"] = "zh";
+        g_tts->Generate(std::string(text), gen_cfg, bridge_callback);
     } catch (const std::exception &e) {
         fprintf(stderr, "[TTS] 合成失败: %s\n", e.what());
         g_user_callback = nullptr;
         return -1;
     }
-
+    // 追加 500ms 静音，防止播放器截断尾部
+    int silence_samples = g_sample_rate / 2;  // 500ms
+    std::vector<int16_t> silence(silence_samples, 0);
+    callback(silence.data(), silence_samples, 1.0f);
     g_user_callback = nullptr;
     return 0;
 }
 
-int tts_sample_rate(void) {
-    return g_sample_rate;
-}
-
-void tts_destroy(void) {
-    g_tts.reset();
-    g_sample_rate = 0;
-}
+int tts_sample_rate(void) { return g_sample_rate; }
+void tts_destroy(void) { g_tts.reset(); g_sample_rate = 0; }
