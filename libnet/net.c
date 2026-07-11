@@ -134,6 +134,48 @@ int stream_send_frame(int sockfd, uint32_t seq, const uint8_t *payload, uint32_t
     return 0;
 }
 
+int stream_send_ai_frame(int sockfd, uint16_t type, uint32_t seq,
+                         uint32_t sample_rate, uint16_t channels,
+                         uint16_t format,
+                         const uint8_t *payload, uint32_t size) {
+    AiFrameHeader_t header;
+    header.magic = htonl(AI_FRAME_MAGIC);
+    header.version = htons(AI_FRAME_VERSION);
+    header.type = htons(type);
+    header.seq = htonl(seq);
+    header.timestamp = htonl(seq * 100);
+    header.sample_rate = htonl(sample_rate);
+    header.channels = htons(channels);
+    header.format = htons(format);
+    header.payload_size = htonl(size);
+
+    uint8_t *head_ptr = (uint8_t *)&header;
+    size_t head_to_send = sizeof(AiFrameHeader_t);
+    while (head_to_send > 0) {
+        ssize_t sent = send(sockfd, head_ptr, head_to_send, MSG_NOSIGNAL);
+        if (sent <= 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        head_ptr += sent;
+        head_to_send -= sent;
+    }
+
+    const uint8_t *data_ptr = payload;
+    size_t data_to_send = size;
+    while (data_to_send > 0) {
+        ssize_t sent = send(sockfd, data_ptr, data_to_send, MSG_NOSIGNAL);
+        if (sent <= 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        data_ptr += sent;
+        data_to_send -= sent;
+    }
+
+    return 0;
+}
+
 void stream_close(int sockfd) {
     if (sockfd >= 0) {
         close(sockfd);

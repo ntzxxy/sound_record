@@ -25,6 +25,11 @@ int audio_player_init(const char *device, unsigned int rate, unsigned int channe
 int audio_player_play(const int16_t *pcm, int num_samples);
 
 /**
+ * 播放 PCM 分块，可控制是否 drain。流式播放时普通块不 drain，最后一块 drain。
+ */
+int audio_player_play_chunk(const int16_t *pcm, int num_samples, int drain);
+
+/**
  * 停止当前播放
  */
 void audio_player_stop(void);

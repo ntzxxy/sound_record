@@ -1,23 +1,23 @@
 #include "tts_queue.h"
 
-void DoubleMessageQueue::push_text(const std::string &msg)
+void DoubleMessageQueue::push_text(const std::string &msg, bool is_final)
 {
 
     std::lock_guard<std::mutex> lock(text_mutex_);
-    text_queue_.push(msg);
+    text_queue_.push(TextMessage{msg, is_final, false});
     text_cond_.notify_one();
 }
 
-std::string DoubleMessageQueue::pop_text()
+TextMessage DoubleMessageQueue::pop_text()
 {
     std::unique_lock<std::mutex> lock(text_mutex_);
     text_cond_.wait(lock, [this]
                     { return !text_queue_.empty() || stop_; });
 
     if (stop_)
-        return "";
+        return TextMessage{"", true, true};
 
-    std::string msg = std::move(text_queue_.front());
+    TextMessage msg = std::move(text_queue_.front());
     text_queue_.pop();
     return msg;
 }
@@ -44,6 +44,20 @@ AudioMessage DoubleMessageQueue::pop_audio()
     AudioMessage msg = std::move(audio_queue_.front());
     audio_queue_.pop();
     return msg;
+}
+
+void DoubleMessageQueue::clear()
+{
+    {
+        std::lock_guard<std::mutex> lock(text_mutex_);
+        std::queue<TextMessage> empty;
+        text_queue_.swap(empty);
+    }
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        std::queue<AudioMessage> empty;
+        audio_queue_.swap(empty);
+    }
 }
 
 void DoubleMessageQueue::stop()

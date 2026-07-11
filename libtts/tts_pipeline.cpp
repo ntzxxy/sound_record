@@ -1,4 +1,5 @@
 #include "tts_pipeline.h"
+#include "tts.h"
 #include "tts_model.h"
 #include "tts_queue.h"
 #include "audio_player_class.h"
@@ -12,103 +13,132 @@
 #include <queue>
 #include <sys/resource.h>
 #include <thread>
+#include <chrono>
 
-// ===================================================================
-// 全局单例
-// ===================================================================
+
 static DoubleMessageQueue           g_queue;
 static std::unique_ptr<TTSModel>    g_model;
 static std::unique_ptr<AudioPlayer> g_player;
 static std::atomic<bool>            g_busy{false};
+static tts_output_start_t           g_output_start = nullptr;
+static tts_output_pcm_t             g_output_pcm = nullptr;
+static tts_output_end_t             g_output_end = nullptr;
+static tts_output_cancel_t          g_output_cancel = nullptr;
+static std::atomic<bool>            g_output_started{false};
 
-static std::thread                  g_synth_thread; // 后台唯一的合成工人
-static std::thread                  g_play_thread;  // 后台唯一的播放工人
+static std::thread                  g_synth_thread;
+static std::thread                  g_play_thread;
+static std::atomic<uint64_t>        g_generation{0};
 
-// 用一个原子变量来跟踪大模型是不是已经吐到了这句话的尾巴
-static std::atomic<bool>            g_is_last_chunk{false};
+static long long now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
-// ===================================================================
-// 2. 线程一：后台合成工人循环（对应你的 pop_text）
-// ===================================================================
+void tts_pipeline_set_output(tts_output_start_t start_cb,
+                             tts_output_pcm_t pcm_cb,
+                             tts_output_end_t end_cb,
+                             tts_output_cancel_t cancel_cb) {
+    g_output_start = start_cb;
+    g_output_pcm = pcm_cb;
+    g_output_end = end_cb;
+    g_output_cancel = cancel_cb;
+}
+
+
 static void tts_synthesis_loop() {
     // 压榨边缘端算力：赋予合成线程极高的 CPU 优先级，防止大模型推理时抢不到算力卡顿
     setpriority(PRIO_PROCESS, 0, -20);
+    bool turn_has_audio = false;
 
     while (true) {
-        // 🌟 伸出双手，阻塞死等文字。由于全厂只有它一个工人，notify_one 精准且唯一的叫醒它！
-        std::string text = g_queue.pop_text();
+        TextMessage msg = g_queue.pop_text();
 
-        // 关键下班通知：如果收到 stop() 触发的空字符串，代表公司倒闭了，直接打破死循环，线程销毁
-        if (text.empty()) {
+        if (msg.is_stop) {
             break;
         }
 
-        // 全文一次性推送模式：每段文本就是完整回复，标记为最后一句话
-        bool is_last = true;
+        uint64_t generation = g_generation.load();
+        if (!msg.text.empty()) {
+            std::cout << "[TTS-Pipeline] synth begin t=" << now_ms()
+                      << " final=" << (msg.is_final ? 1 : 0)
+                      << " text=" << msg.text << std::endl;
+            g_model->infer_stream(msg.text, [generation, &turn_has_audio, first_pcm = true](const int16_t *samples, int n, float) mutable {
+                if (generation != g_generation.load()) return 0;
+                if (!samples || n <= 0) return 1;
+                if (first_pcm) {
+                    std::cout << "[TTS-Pipeline] first pcm t=" << now_ms()
+                              << " samples=" << n << std::endl;
+                    first_pcm = false;
+                }
+                auto audio_buf = std::make_unique<int16_t[]>(n);
+                std::memcpy(audio_buf.get(), samples, n * sizeof(int16_t));
+                g_queue.push_audio(std::move(audio_buf), n, false);
+                turn_has_audio = true;
+                return 1;
+            });
+        }
 
-        int32_t audio_len = 0;
-        if (!text.empty()) {
-            // 调用底层的底层：真正把文字喂给模型进行 ONNX/GGUF 推理
-            int16_t* wav_raw = g_model->infer(text, audio_len);
+        if (generation != g_generation.load()) {
+            continue;
+        }
 
-            if (wav_raw && audio_len > 0) {
-                // 将裸 PCM 数据无缝装入智能指针，移交所有权
-                auto audio_buf = std::make_unique<int16_t[]>(audio_len);
-                std::memcpy(audio_buf.get(), wav_raw, audio_len * sizeof(int16_t));
-
-                // 🌟 推入音频传送带，并标记这块音频是不是大模型的最后一句话
-                g_queue.push_audio(std::move(audio_buf), audio_len, is_last);
-
-                // 释放底层推理引擎的临时内存
-                g_model->free_data(wav_raw);
+        if (msg.is_final) {
+            int sr = tts_sample_rate();
+            int silence_samples = sr > 0 ? sr / 5 : 0; // 200ms，防止最后尾音被截断
+            if (turn_has_audio && silence_samples > 0) {
+                auto silence = std::make_unique<int16_t[]>(silence_samples);
+                std::memset(silence.get(), 0, silence_samples * sizeof(int16_t));
+                g_queue.push_audio(std::move(silence), silence_samples, true);
+            } else {
+                auto empty_buf = std::make_unique<int16_t[]>(0);
+                g_queue.push_audio(std::move(empty_buf), 0, true);
             }
-        } else {
-            // 如果是一句空文本，也发一个空包过去，确保 is_last 标记能够透传给播放端
-            auto empty_buf = std::make_unique<int16_t[]>(0);
-            g_queue.push_audio(std::move(empty_buf), 0, is_last);
+            turn_has_audio = false;
         }
     }
 }
 
-// ===================================================================
-// 3. 线程二：后台播放工人循环（对应你的 pop_audio）
-// ===================================================================
+
 static void tts_playback_loop() {
-    // 同样赋予声卡写入线程最高优先级，保证音频输出绝对平滑、没有杂音和断续
     setpriority(PRIO_PROCESS, 0, -20);
 
     while (true) {
-        // 🌟 阻塞死等合成完的裸 PCM 音频分片
         AudioMessage msg = g_queue.pop_audio();
 
-        // 关键下班通知：收到全局 stop() 广播发来的空指针，直接下班销毁
         if (msg.data == nullptr) {
             break;
         }
 
-        // 如果长度大于0，真正调用底层 ALSA 的 snd_pcm_writei 驱动声卡发出声音
         if (msg.length > 0) {
-            g_player->play(msg.data.get(), msg.length, 1.0f);
+            if (g_output_pcm) {
+                if (!g_output_started.exchange(true) && g_output_start) {
+                    g_output_start(tts_sample_rate(), 1);
+                }
+                g_output_pcm(msg.data.get(), msg.length, msg.is_last ? 1 : 0);
+            } else {
+                g_player->play_chunk(msg.data.get(), msg.length, msg.is_last);
+            }
+        } else if (msg.is_last) {
+            if (!g_output_pcm) g_player->play_chunk(nullptr, 0, true);
         }
 
-        // 🌟 【彻底攻克自激死循环的战术核心】
-        // 当这个唯一的播放工人真正把这一轮对话的最后一个切片（is_last）播完、喇叭闭嘴的那一瞬间！
         if (msg.is_last) {
+            if (g_output_started.exchange(false) && g_output_end) {
+                g_output_end();
+            }
             g_busy = false;  // 播完，解除 ASR 门控
             std::cout << "[TTS-Pipeline] 播放完毕，声卡空闲。" << std::endl;
         }
     }
 }
 
-// ===================================================================
-// 4. 对外开放的生命周期控制接口
-// ===================================================================
 int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
     if (!tts_model_path) return -1;
 
     try {
         g_model = std::make_unique<TTSModel>(tts_model_path);
-        g_player = std::make_unique<AudioPlayer>();
+        g_player = std::make_unique<AudioPlayer>(tts_sample_rate());
 
         // 🌟【招募打工人】真正创建并盘活这两个后台线程！
         // 这两行执行完，两个 loop 函数就会在完全独立的 CPU 核心后台各自埋头死循环，井水不犯河水
@@ -123,10 +153,11 @@ int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
     }
 }
 
-void tts_pipeline_push(const char *text) {
-    if (!text || text[0] == '\0') return;
+void tts_pipeline_push(const char *text, int is_final) {
+    if (!text) return;
+    if (text[0] == '\0' && !is_final) return;
     g_busy = true;
-    g_queue.push_text(std::string(text));
+    g_queue.push_text(std::string(text), is_final != 0);
 }
 
 int tts_pipeline_is_busy(void) { return g_busy ? 1 : 0; }
@@ -134,11 +165,11 @@ int tts_pipeline_is_busy(void) { return g_busy ? 1 : 0; }
 void tts_pipeline_interrupt(void) {
     std::cout << "[System] 收到强制打断信号，正在清空整个管线..." << std::endl;
 
-    // 先让底层的播放驱动强行把 DMA 缓冲区里的声音掐断
-    // g_player->stop_device();
-
-    // 清空历史遗留的、还没来得及合成的文本，以及还没来得及播放的音频
-    // 注意：你可以在 MessageQueue 里面加一个 clear() 函数来配合，或者直接让现有的队列排空
+    g_generation.fetch_add(1);
+    g_queue.clear();
+    if (g_player) g_player->stop();
+    if (g_output_started.exchange(false) && g_output_cancel) g_output_cancel();
+    g_busy = false;
 }
 
 void tts_pipeline_destroy(void) {

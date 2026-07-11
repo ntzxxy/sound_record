@@ -62,7 +62,7 @@ int audio_player_init(const char *device, unsigned int rate, unsigned int channe
     return 0;
 }
 
-int audio_player_play(const int16_t *pcm, int num_samples) {
+int audio_player_play_chunk(const int16_t *pcm, int num_samples, int drain) {
     if (!pcm || num_samples <= 0) return -1;
 
     // ---- fallback 模式：写临时 WAV → system 播放 ----
@@ -126,9 +126,13 @@ int audio_player_play(const int16_t *pcm, int num_samples) {
         }
         written += ret;
     }
-    snd_pcm_drain(g_pcm_handle);
+    if (drain) snd_pcm_drain(g_pcm_handle);
     g_playing = false;
     return 0;
+}
+
+int audio_player_play(const int16_t *pcm, int num_samples) {
+    return audio_player_play_chunk(pcm, num_samples, 1);
 }
 
 void audio_player_stop(void) {

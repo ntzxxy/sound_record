@@ -55,8 +55,8 @@ void* key_monitor_thread(void* arg)
         {
             audio_stop_recording();
 #ifdef STREAMING_MODE
-            // 流式模式下：只需挂起等待底层把流彻底发送干净、断开即可
-            audio_wait_file_ready();
+            // 流式全双工模式下，MIC_END 由 writer 线程异步发送。
+            // 按键线程不能阻塞等待，否则网络/播放侧一旦卡住会导致后续按键不再响应。
 #else
             audio_wait_file_ready();
 

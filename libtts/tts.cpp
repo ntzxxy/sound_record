@@ -37,7 +37,7 @@ int tts_init(const char *model_dir) {
     sherpa_onnx::OfflineTtsConfig config;
     config.model.num_threads = 1;
     config.model.provider    = "cpu";
-    config.max_num_sentences = -1;  // -1 = 不限制句数，避免多句文本被截断
+    config.max_num_sentences = 1;  // 按句/chunk 回调，便于边合成边播放
 
     // 自动检测模型类型：tts.json → Supertonic，否则 VITS/Matcha
     if (file_exists(base + "/tts.json")) {
@@ -101,10 +101,6 @@ int tts_speak(const char *text, tts_callback_t callback) {
         g_user_callback = nullptr;
         return -1;
     }
-    // 追加 500ms 静音，防止播放器截断尾部
-    int silence_samples = g_sample_rate / 2;  // 500ms
-    std::vector<int16_t> silence(silence_samples, 0);
-    callback(silence.data(), silence_samples, 1.0f);
     g_user_callback = nullptr;
     return 0;
 }
