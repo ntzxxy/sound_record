@@ -11,8 +11,8 @@ echo "[mic_usb] Configuring USB mic on card ${CARD}..."
 amixer -c ${CARD} scontrols
 
 # 打开 Mic 捕获、设置音量
-amixer -c ${CARD} sset 'Mic' 80% cap 2>/dev/null || \
-amixer -c ${CARD} sset 'Capture' 80% cap 2>/dev/null || \
+amixer -c ${CARD} sset 'Mic' 95% cap 2>/dev/null || \
+amixer -c ${CARD} sset 'Capture' 95% cap 2>/dev/null || \
 echo "[mic_usb] Warning: no Mic/Capture control found on card ${CARD}"
 
 # 如果存在 Auto Gain Control，关闭它（避免自动增益影响 ASR）

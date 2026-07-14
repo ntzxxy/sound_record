@@ -140,8 +140,7 @@ int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
         g_model = std::make_unique<TTSModel>(tts_model_path);
         g_player = std::make_unique<AudioPlayer>(tts_sample_rate());
 
-        // 🌟【招募打工人】真正创建并盘活这两个后台线程！
-        // 这两行执行完，两个 loop 函数就会在完全独立的 CPU 核心后台各自埋头死循环，井水不犯河水
+        // 这两行执行完，两个 loop 函数就会在完全独立的 CPU 核心后台各自埋头死循环
         g_synth_thread = std::thread(tts_synthesis_loop);
         g_play_thread  = std::thread(tts_playback_loop);
 
@@ -154,13 +153,17 @@ int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
 }
 
 void tts_pipeline_push(const char *text, int is_final) {
-    if (!text) return;
-    if (text[0] == '\0' && !is_final) return;
+    if (!text)
+        return;
+    if (text[0] == '\0' && !is_final)
+        return;
     g_busy = true;
     g_queue.push_text(std::string(text), is_final != 0);
 }
 
-int tts_pipeline_is_busy(void) { return g_busy ? 1 : 0; }
+int tts_pipeline_is_busy(void) {
+    return g_busy ? 1 : 0;
+}
 
 void tts_pipeline_interrupt(void) {
     std::cout << "[System] 收到强制打断信号，正在清空整个管线..." << std::endl;

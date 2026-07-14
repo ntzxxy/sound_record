@@ -23,7 +23,8 @@ TTSModel::~TTSModel() {
 }
 
 bool TTSModel::load_model(const std::string &model_path) {
-    if (tts_init(model_path.c_str()) != 0) return false;
+    if (tts_init(model_path.c_str()) != 0)
+        return false;
     return true;
 }
 
