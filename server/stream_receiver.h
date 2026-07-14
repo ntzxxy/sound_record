@@ -25,6 +25,9 @@ typedef struct {
     uint32_t Subchunk2Size;  // 原始 PCM 数据的总大小
 } __attribute__ ((packed)) WavHeader_t;
 
-int start_stream_server(int port, const std::string& save_dir);
+int start_stream_server(int port, const std::string& save_dir,
+                       const std::string& asr_model_dir,
+                       const std::string& llm_model_path,
+                       const std::string& tts_model_path);
 
 #endif //STREAM_RECEIVER_H

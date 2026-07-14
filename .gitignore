@@ -1,5 +1,9 @@
 build/
+build-pc/
 server/received_audio/
+docs/
+*.docx
+*.gguf
 *.wav
 .vscode/
 .idea/

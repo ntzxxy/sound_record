@@ -16,8 +16,7 @@ std::size_t RingBuffer::write(const uint8_t* data, std::size_t len)
     std::unique_lock<std::mutex> lock(mutex_);
 
     std::size_t written = 0;
-
-    while (written < len ) {
+    while (written < len) {
         while (size_ == capacity_) {
             notFull_.wait(lock);
         }
@@ -25,7 +24,6 @@ std::size_t RingBuffer::write(const uint8_t* data, std::size_t len)
         writePos_ = (writePos_ + 1) % capacity_;
         ++size_;
         ++written;
-        notEmpty_.notify_one();
     }
 
     return written;
@@ -35,24 +33,22 @@ std::size_t RingBuffer::read(uint8_t* out, std::size_t len)
 {
     if (!out || len == 0) return 0;
 
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
 
-    std::size_t readBytes = 0;
-
-    while (readBytes < len ) {
-        while (size_ == 0) {
-            notEmpty_.wait(lock);
-        }
-        out[readBytes] = buffer_[readPos_];
+    std::size_t actual = (len < size_) ? len : size_;
+    for (std::size_t i = 0; i < actual; ++i) {
+        out[i] = buffer_[readPos_];
         readPos_ = (readPos_ + 1) % capacity_;
-        --size_;
-        ++readBytes;
+    }
+    size_ -= actual;
 
+    if (actual > 0) {
         notFull_.notify_one();
     }
 
-    return readBytes;
+    return actual;
 }
+
 std::size_t RingBuffer::availableData()
 {
     std::lock_guard<std::mutex> lock(mutex_);

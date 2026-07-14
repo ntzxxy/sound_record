@@ -16,7 +16,8 @@ static void sig_handler(int sig) {
 
 int main(int argc, char *argv[]) {
     // 用法: ./out [usb|wm8960] [--upload] [--server IP]
-    //       ./out usb --upload --server 192.168.0.7
+    //       ./out usb                        → 默认连 10.137.46.138:8080
+    //       ./out usb --server 192.168.1.100 → 指定 IP
     //       ./out wm8960
     const AudioConfig *cfg = &AUDIO_CFG_USB;
 
@@ -31,6 +32,18 @@ int main(int argc, char *argv[]) {
             g_server_ip = argv[++i];
         }
     }
+
+    // 流传输模式下自动启用上传
+#ifdef STREAMING_MODE
+    g_enable_upload = 1;
+#endif
+    if (!g_server_ip) {
+        fprintf(stderr, "[APP] 未指定服务器 IP，请通过 run.sh 启动或加 --server 参数\n");
+        return -1;
+    }
+    printf("[APP] 录音模式: %s, 服务器: %s:%d\n",
+           cfg == &AUDIO_CFG_USB ? "USB" : "WM8960",
+           g_server_ip, g_server_port);
 
     // 注册信号处理
     signal(SIGINT, sig_handler);

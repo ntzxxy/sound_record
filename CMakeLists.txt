@@ -1,9 +1,9 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.17)
 project(IMX_AI_ASSISTANT C CXX)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -20,6 +20,31 @@ endif()
 add_subdirectory(libaudio)
 add_subdirectory(libnet)
 add_subdirectory(src)
+# ASR 引擎仅在 PC/Jetson（非 arm 交叉编译）时构建
+option(BUILD_ASR "Build sherpa-onnx ASR engine" ON)
+if(BUILD_ASR AND CMAKE_CROSSCOMPILING)
+    message(STATUS ">>>> 交叉编译环境，跳过 sherpa-onnx（仅限 PC 端使用）<<<<")
+    set(BUILD_ASR OFF)
+endif()
+if(BUILD_ASR)
+    # sherpa-onnx v1.13.3 的外层 CMake 有子目录 add_subdirectory(sherpa-onnx)
+    # 先把 CMAKE_CURRENT_SOURCE_DIR 指向正确位置才能找到 sherpa-onnx/ 子目录
+    set(saved_CMAKE_CURRENT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+    add_subdirectory(third_party/sherpa-onnx)
+    add_subdirectory(libasr)
+    add_subdirectory(libtts)
+endif()
+
+# LLM 引擎仅在 PC/Jetson 时构建
+option(BUILD_LLM "Build llama.cpp LLM engine" ON)
+if(BUILD_LLM AND CMAKE_CROSSCOMPILING)
+    message(STATUS ">>>> 交叉编译环境，跳过 llama.cpp（仅限 PC 端使用）<<<<")
+    set(BUILD_LLM OFF)
+endif()
+if(BUILD_LLM)
+    add_subdirectory(third_party/llama.cpp)
+    add_subdirectory(libllm)
+endif()
 
 # PC 端 server 只在使用 x86 原生编译器时才构建，arm 交叉编译时自动跳过
 option(BUILD_SERVER "Build the PC-side stream receiver" ON)

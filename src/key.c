@@ -8,9 +8,9 @@
 #include <pthread.h>
 #include "net.h"
 
-// 服务器配置（可通过 main 覆盖）
+// 服务器配置（必须通过 main 的 --server 参数传入，run.sh 自动处理）
 int g_enable_upload = 0;
-const char *g_server_ip = "192.168.0.7";
+const char *g_server_ip = NULL;  // 由 run.sh 传入
 int g_server_port = 8080;
 
 static int fd = -1;
@@ -55,8 +55,8 @@ void* key_monitor_thread(void* arg)
         {
             audio_stop_recording();
 #ifdef STREAMING_MODE
-            // 流式模式下：只需挂起等待底层把流彻底发送干净、断开即可
-            audio_wait_file_ready();
+            // 流式全双工模式下，MIC_END 由 writer 线程异步发送。
+            // 按键线程不能阻塞等待，否则网络/播放侧一旦卡住会导致后续按键不再响应。
 #else
             audio_wait_file_ready();
 

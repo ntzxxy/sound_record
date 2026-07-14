@@ -16,8 +16,6 @@ public:
     std::size_t availableSpace();
     void reset();
 
-
-
 private:
     std::vector<uint8_t> buffer_;
     std::size_t capacity_;
@@ -25,7 +23,6 @@ private:
     std::size_t writePos_;
     std::size_t size_;
     std::mutex mutex_;
-    std::condition_variable notEmpty_;
     std::condition_variable notFull_;
 };
 

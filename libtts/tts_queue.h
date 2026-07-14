@@ -1,0 +1,47 @@
+#ifndef TTS_queue_H
+#define TTS_queue_H
+
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <memory>
+#include <atomic>
+#include <cstdint>
+#include <string>
+
+struct TextMessage {
+    std::string text;
+    bool is_final = false;
+    bool is_stop = false;
+};
+
+struct AudioMessage {
+    std::unique_ptr<int16_t[]> data;
+    size_t length;
+    bool is_last = false;
+};
+
+class DoubleMessageQueue {
+public:
+    void push_text(const std::string &msg, bool is_final = false);
+    TextMessage pop_text();
+
+    void push_audio(std::unique_ptr<int16_t[]> data, size_t length, bool is_last = false);
+    AudioMessage pop_audio();
+
+    void clear();
+    void stop();
+
+private:
+    std::queue<TextMessage> text_queue_;
+    std::mutex text_mutex_;
+    std::condition_variable text_cond_;
+
+    std::queue<AudioMessage> audio_queue_;
+    std::mutex audio_mutex_;
+    std::condition_variable audio_cond_;
+
+    std::atomic<bool> stop_{false};
+};
+
+#endif // TTS_queue_H
