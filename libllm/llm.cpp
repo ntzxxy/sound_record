@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ static int g_n_predict = 256;  // 足够完成一个完整回答
 static int g_total_tokens = 0;  // 追踪上下文中的 token 总数
 
 // ======================================================================
+
+static long long now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 int llm_init(const char *model_path) {
     // 抑制 CUDA graph 等 DEBUG 日志
@@ -74,6 +80,8 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
         return -1;
     }
 
+    long long total_begin_ms = now_ms();
+
     // 1. Tokenize 输入
     std::string prompt_str(prompt);
     int n_prompt = -llama_tokenize(g_vocab, prompt_str.c_str(), prompt_str.size(),
@@ -87,15 +95,20 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
     }
 
     // 2. 处理 prompt
+    long long prompt_decode_begin_ms = now_ms();
     llama_batch batch = llama_batch_get_one(prompt_tokens.data(), n_prompt);
     if (llama_decode(g_ctx, batch)) {
         return -1;
     }
+    long long generation_begin_ms = now_ms();
     g_total_tokens += n_prompt;
 
     // 3. 逐 token 生成
     llama_token new_token_id;
     bool eog_reached = false;
+    bool first_piece = true;
+    long long first_token_ms = 0;
+    int generated_tokens = 0;
     int i;
     for (i = 0; i < g_n_predict; i++) {
         new_token_id = llama_sampler_sample(g_smpl, g_ctx, -1);
@@ -110,6 +123,10 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
                                      buf, sizeof(buf), 0, false);
         if (n > 0) {
             std::string text(buf, n);
+            if (first_piece) {
+                first_token_ms = now_ms();
+                first_piece = false;
+            }
             callback(text.c_str(), 0);
         }
 
@@ -118,9 +135,19 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
             break;
         }
         g_total_tokens++;
+        generated_tokens++;
     }
 
     callback("", 1);
+    long long end_ms = now_ms();
+    long long ttft_ms = first_token_ms > 0 ? first_token_ms - total_begin_ms : -1;
+    long long prompt_decode_ms = generation_begin_ms - prompt_decode_begin_ms;
+    long long decode_ms = end_ms - generation_begin_ms;
+    double tokens_per_s = decode_ms > 0 ? generated_tokens * 1000.0 / decode_ms : 0.0;
+    fprintf(stderr,
+            "[METRIC] llm prompt_tokens=%d output_tokens=%d ttft_ms=%lld prompt_decode_ms=%lld decode_ms=%lld tokens_per_s=%.2f truncated=%d\n",
+            n_prompt, generated_tokens, ttft_ms, prompt_decode_ms, decode_ms,
+            tokens_per_s, eog_reached ? 0 : 1);
     // 返回 1 表示被 token 上限截断（未到 EOS）
     return eog_reached ? 0 : 1;
 }

@@ -35,6 +35,23 @@ static long long now_ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+static int utf8_char_len(unsigned char c) {
+    if ((c & 0x80) == 0) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+static int utf8_count_chars(const std::string& s) {
+    int count = 0;
+    for (size_t i = 0; i < s.size();) {
+        i += utf8_char_len(static_cast<unsigned char>(s[i]));
+        count++;
+    }
+    return count;
+}
+
 void tts_pipeline_set_output(tts_output_start_t start_cb,
                              tts_output_pcm_t pcm_cb,
                              tts_output_end_t end_cb,
@@ -60,23 +77,41 @@ static void tts_synthesis_loop() {
 
         uint64_t generation = g_generation.load();
         if (!msg.text.empty()) {
-            std::cout << "[TTS-Pipeline] synth begin t=" << now_ms()
+            long long synth_begin_ms = now_ms();
+            long long first_pcm_ms = 0;
+            int64_t total_samples = 0;
+            int text_chars = utf8_count_chars(msg.text);
+            std::cout << "[TTS-Pipeline] synth begin t=" << synth_begin_ms
                       << " final=" << (msg.is_final ? 1 : 0)
                       << " text=" << msg.text << std::endl;
-            g_model->infer_stream(msg.text, [generation, &turn_has_audio, first_pcm = true](const int16_t *samples, int n, float) mutable {
+            g_model->infer_stream(msg.text, [generation, &turn_has_audio, &first_pcm_ms, &total_samples, synth_begin_ms, text_chars, first_pcm = true](const int16_t *samples, int n, float) mutable {
                 if (generation != g_generation.load()) return 0;
                 if (!samples || n <= 0) return 1;
                 if (first_pcm) {
-                    std::cout << "[TTS-Pipeline] first pcm t=" << now_ms()
+                    first_pcm_ms = now_ms();
+                    std::cout << "[TTS-Pipeline] first pcm t=" << first_pcm_ms
                               << " samples=" << n << std::endl;
+                    std::cout << "[METRIC] tts_first_pcm_ms=" << (first_pcm_ms - synth_begin_ms)
+                              << " text_chars=" << text_chars
+                              << " samples_first=" << n << std::endl;
                     first_pcm = false;
                 }
+                total_samples += n;
                 auto audio_buf = std::make_unique<int16_t[]>(n);
                 std::memcpy(audio_buf.get(), samples, n * sizeof(int16_t));
                 g_queue.push_audio(std::move(audio_buf), n, false);
                 turn_has_audio = true;
                 return 1;
             });
+            long long synth_ms = now_ms() - synth_begin_ms;
+            int sr = tts_sample_rate();
+            long long audio_ms = sr > 0 ? total_samples * 1000LL / sr : 0;
+            double rtf = audio_ms > 0 ? static_cast<double>(synth_ms) / audio_ms : 0.0;
+            std::cout << "[METRIC] tts synth_ms=" << synth_ms
+                      << " audio_ms=" << audio_ms
+                      << " rtf=" << rtf
+                      << " text_chars=" << text_chars
+                      << " final=" << (msg.is_final ? 1 : 0) << std::endl;
         }
 
         if (generation != g_generation.load()) {
@@ -139,6 +174,14 @@ int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
     try {
         g_model = std::make_unique<TTSModel>(tts_model_path);
         g_player = std::make_unique<AudioPlayer>(tts_sample_rate());
+
+        long long warmup_begin_ms = now_ms();
+        std::cout << "[TTS] warmup begin text=你好" << std::endl;
+        bool warmup_ok = g_model->infer_stream("你好", [](const int16_t *, int, float) {
+            return 1;
+        });
+        std::cout << "[TTS] warmup " << (warmup_ok ? "done" : "failed") << " cost_ms="
+                  << (now_ms() - warmup_begin_ms) << std::endl;
 
         // 这两行执行完，两个 loop 函数就会在完全独立的 CPU 核心后台各自埋头死循环
         g_synth_thread = std::thread(tts_synthesis_loop);

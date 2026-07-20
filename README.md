@@ -95,7 +95,7 @@ cmake --build cmake-build-wsl-local -j
 修改 `run.sh` 里的 PC 端 IP：
 
 ```sh
-SERVER_IP="192.168.0.18"
+SERVER_IP="192.168.0.14"
 ```
 
 然后在板端运行：

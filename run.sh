@@ -1,14 +1,16 @@
 #!/bin/sh
 # 一键启动：配置声卡 + 运行程序
+# 运行方式：直接 ./run.sh
 #
-# ==== 只需改这一个变量 ====
-SERVER_IP="192.168.0.18"   # PC 端 IP 地址
-# ==========================
-
+# ==== 默认配置 ====
+SERVER_IP="192.168.0.14"   # PC 端 IP 地址
 MIC_TYPE="usb"
+# =================
 
 cd "$(dirname "$0")"
 chmod +x ./out ./run.sh
+
+echo '[run.sh] runtime: AIV1 full-duplex board client'
 
 if [ "$MIC_TYPE" = "wm8960" ]; then
     echo '[run.sh] Configuring on-board mic (wm8960)...'

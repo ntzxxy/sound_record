@@ -1,13 +1,23 @@
 #include "asr.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <cstdio>
 
 #include "sherpa-onnx/csrc/online-recognizer.h"
 
 static std::unique_ptr<sherpa_onnx::OnlineRecognizer> g_recognizer;
 static std::unique_ptr<sherpa_onnx::OnlineStream> g_stream;
+static long long g_asr_audio_ms_acc = 0;
+static long long g_asr_process_ms_acc = 0;
+static int g_asr_frames_acc = 0;
+
+static long long now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 int asr_init(const char *model_dir) {
     // TODO: 加载模型，创建 OnlineRecognizer
@@ -28,7 +38,7 @@ int asr_init(const char *model_dir) {
     sherpa_onnx::OnlineRecognizerConfig config;
     config.model_config = model;
 
-    // 端点检测：静音 1.0 秒后自动断句，检测到新语音自动重置计时
+    // 端点检测：静音 1.5 秒后自动断句，检测到新语音自动重置计时
     config.enable_endpoint = true;
     config.endpoint_config.rule1 = sherpa_onnx::EndpointRule(false, 2.4f, 0);
     config.endpoint_config.rule2 = sherpa_onnx::EndpointRule(true, 1.5f, 0);
@@ -46,6 +56,8 @@ int asr_process_frame(const int16_t *pcm, int num_samples) {
         return -1;
     }
 
+    long long begin_ms = now_ms();
+
     // 1.1 int16_t 转 float32，并归一化到 [-1.0, 1.0]
     std::vector<float> float_samples(num_samples);
     for (int i = 0; i < num_samples; ++i) {
@@ -58,6 +70,23 @@ int asr_process_frame(const int16_t *pcm, int num_samples) {
     // 1.3 驱动模型进行解码
     while (g_recognizer->IsReady(g_stream.get())) {
         g_recognizer->DecodeStream(g_stream.get());
+    }
+
+    long long process_ms = now_ms() - begin_ms;
+    long long audio_ms = num_samples * 1000LL / 16000;
+    g_asr_audio_ms_acc += audio_ms;
+    g_asr_process_ms_acc += process_ms;
+    g_asr_frames_acc++;
+    if (g_asr_audio_ms_acc >= 1000) {
+        double rtf = g_asr_audio_ms_acc > 0
+            ? static_cast<double>(g_asr_process_ms_acc) / g_asr_audio_ms_acc
+            : 0.0;
+        fprintf(stderr,
+                "[METRIC] asr frames=%d audio_ms=%lld process_ms=%lld rtf=%.3f\n",
+                g_asr_frames_acc, g_asr_audio_ms_acc, g_asr_process_ms_acc, rtf);
+        g_asr_audio_ms_acc = 0;
+        g_asr_process_ms_acc = 0;
+        g_asr_frames_acc = 0;
     }
 
     return 0;

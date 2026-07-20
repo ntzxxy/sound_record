@@ -44,6 +44,7 @@ int main(int argc, char *argv[]) {
     printf("[APP] 录音模式: %s, 服务器: %s:%d\n",
            cfg == &AUDIO_CFG_USB ? "USB" : "WM8960",
            g_server_ip, g_server_port);
+    printf("[APP] protocol: AIV1 full-duplex, build: %s %s\n", __DATE__, __TIME__);
 
     // 注册信号处理
     signal(SIGINT, sig_handler);

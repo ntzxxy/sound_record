@@ -151,7 +151,12 @@ static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
 // ===================================================================
 // LLM 异步推理线程
 // ===================================================================
-struct ChatTask { std::string text; bool is_reset; };
+struct ChatTask {
+    std::string text;
+    bool is_reset;
+    uint64_t turn_id;
+    long long submit_ms;
+};
 
 static std::queue<ChatTask>    g_task_queue;
 static std::mutex              g_queue_mutex;
@@ -165,6 +170,41 @@ static std::atomic<uint32_t>   g_tts_seq{0};
 static std::atomic<int>        g_tts_sample_rate{44100};
 static std::atomic<uint64_t>   g_tts_pcm_frames{0};
 static std::atomic<uint64_t>   g_tts_pcm_bytes{0};
+static int utf8_count_chars(const std::string& s, size_t end);
+static std::atomic<uint64_t>   g_turn_id{0};
+static std::atomic<long long>  g_metric_mic_start_ms{0};
+static std::atomic<long long>  g_metric_mic_end_ms{0};
+static std::atomic<long long>  g_metric_asr_final_ms{0};
+static std::atomic<long long>  g_metric_llm_submit_ms{0};
+static std::atomic<long long>  g_metric_tts_first_segment_ms{0};
+static std::atomic<bool>       g_metric_llm_first_token_seen{false};
+static std::atomic<bool>       g_metric_tts_first_segment_seen{false};
+static std::atomic<bool>       g_metric_first_audio_seen{false};
+
+static long long metric_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void metric_reset_turn() {
+    g_metric_mic_start_ms = 0;
+    g_metric_mic_end_ms = 0;
+    g_metric_asr_final_ms = 0;
+    g_metric_llm_submit_ms = 0;
+    g_metric_tts_first_segment_ms = 0;
+    g_metric_llm_first_token_seen = false;
+    g_metric_tts_first_segment_seen = false;
+    g_metric_first_audio_seen = false;
+}
+
+static void metric_mark_asr_final(const std::string& text) {
+    long long now = metric_now_ms();
+    g_metric_asr_final_ms = now;
+    std::cout << "[METRIC] asr_final turn=" << g_turn_id.load()
+              << " text_chars=" << utf8_count_chars(text, text.size())
+              << " mic_end_to_asr_ms=" << (g_metric_mic_end_ms.load() > 0 ? now - g_metric_mic_end_ms.load() : -1)
+              << std::endl;
+}
 
 static int send_ai_frame_server(int fd, uint16_t type, uint32_t seq,
                                 uint32_t sample_rate, uint16_t channels,
@@ -175,12 +215,11 @@ static int send_ai_frame_server(int fd, uint16_t type, uint32_t seq,
     header.version = htons(AI_FRAME_VERSION);
     header.type = htons(type);
     header.seq = htonl(seq);
-    header.timestamp = htonl(seq * 100);
+    header.timestamp = htonl(seq * 100);            //时间戳需要是真实时间戳？
     header.sample_rate = htonl(sample_rate);
     header.channels = htons(channels);
     header.format = htons(format);
     header.payload_size = htonl(size);
-
     auto send_all = [](int sock, const uint8_t *buf, size_t len) -> int {
         while (len > 0) {
             ssize_t n = send(sock, buf, len, MSG_NOSIGNAL);
@@ -203,6 +242,18 @@ static int send_ai_frame_server(int fd, uint16_t type, uint32_t seq,
 static void send_tts_start(int sample_rate, int channels) {
     int fd = g_client_fd.load();
     if (fd < 0) return;
+    long long now = metric_now_ms();
+    if (!g_metric_first_audio_seen.exchange(true)) {
+        long long mic_end_ms = g_metric_mic_end_ms.load();
+        long long asr_final_ms = g_metric_asr_final_ms.load();
+        long long llm_submit_ms = g_metric_llm_submit_ms.load();
+        long long tts_segment_ms = g_metric_tts_first_segment_ms.load();
+        std::cout << "[METRIC] e2e_first_audio_ms=" << (mic_end_ms > 0 ? now - mic_end_ms : -1)
+                  << " asr_final_to_audio_ms=" << (asr_final_ms > 0 ? now - asr_final_ms : -1)
+                  << " llm_submit_to_audio_ms=" << (llm_submit_ms > 0 ? now - llm_submit_ms : -1)
+                  << " tts_segment_to_audio_ms=" << (tts_segment_ms > 0 ? now - tts_segment_ms : -1)
+                  << " turn=" << g_turn_id.load() << std::endl;
+    }
     g_tts_seq = 0;
     g_tts_sample_rate = sample_rate;
     g_tts_pcm_frames = 0;
@@ -331,11 +382,32 @@ static void flush_tts_segments(std::string& pending, bool final) {
         std::string segment = trim_ascii(pending.substr(0, boundary));
         pending.erase(0, boundary);
         if (!segment.empty()) {
+            long long now = metric_now_ms();
+            if (!g_metric_tts_first_segment_seen.exchange(true)) {
+                g_metric_tts_first_segment_ms = now;
+                long long llm_submit_ms = g_metric_llm_submit_ms.load();
+                std::cout << "[METRIC] tts_first_segment turn=" << g_turn_id.load()
+                          << " llm_submit_to_segment_ms=" << (llm_submit_ms > 0 ? now - llm_submit_ms : -1)
+                          << " chars=" << utf8_count_chars(segment, segment.size()) << std::endl;
+            }
             bool is_final = final && trim_ascii(pending).empty();
             std::cout << "[TTS-Segment] " << segment << " final=" << (is_final ? 1 : 0) << std::endl;
             tts_pipeline_push(segment.c_str(), is_final ? 1 : 0);
         }
     }
+}
+
+static void append_asr_segment(std::string& full_text,
+                               std::string& last_segment,
+                               const std::string& segment) {
+    if (segment.empty() || segment == last_segment) return;
+    if (!full_text.empty() && full_text.size() >= segment.size() &&
+        full_text.compare(full_text.size() - segment.size(), segment.size(), segment) == 0) {
+        last_segment = segment;
+        return;
+    }
+    full_text += segment;
+    last_segment = segment;
 }
 
 static void llm_worker() {
@@ -351,6 +423,13 @@ static void llm_worker() {
         if (task.is_reset) { agent_reset(); continue; }
 
         // LLM 回调：打印 + 智能分块推送到 TTS 管线
+        long long worker_begin_ms = metric_now_ms();
+        if (task.turn_id == g_turn_id.load()) {
+            g_metric_llm_submit_ms = task.submit_ms;
+            std::cout << "[METRIC] llm_queue turn=" << task.turn_id
+                      << " wait_ms=" << (worker_begin_ms - task.submit_ms)
+                      << " text_chars=" << utf8_count_chars(task.text, task.text.size()) << std::endl;
+        }
         std::cout << "[Agent] " << std::flush;
         static std::string g_full;
         static std::string g_tts_pending;
@@ -358,6 +437,15 @@ static void llm_worker() {
         g_tts_pending.clear();
         agent_chat(task.text.c_str(), [](const char *text, int is_final) {
             if (text && text[0]) {
+                long long now = metric_now_ms();
+                if (!g_metric_llm_first_token_seen.exchange(true)) {
+                    long long submit_ms = g_metric_llm_submit_ms.load();
+                    long long asr_final_ms = g_metric_asr_final_ms.load();
+                    std::cout << "[METRIC] llm_first_token turn=" << g_turn_id.load()
+                              << " llm_submit_to_first_token_ms=" << (submit_ms > 0 ? now - submit_ms : -1)
+                              << " asr_final_to_first_token_ms=" << (asr_final_ms > 0 ? now - asr_final_ms : -1)
+                              << std::endl;
+                }
                 std::cout << text << std::flush;
                 g_full += text;
                 g_tts_pending += text;
@@ -438,7 +526,15 @@ int start_stream_server(int port, const std::string& save_dir,
         recorder.open(save_dir);
         uint32_t expected_seq = 0;
         bool first_frame = true;
+        uint64_t stream_pcm_frames = 0;
+        uint64_t stream_pcm_bytes = 0;
+        uint64_t stream_seq_gap = 0;
+        long long stream_first_pcm_ms = 0;
+        long long stream_last_pcm_ms = 0;
+        uint64_t turn_pcm_bytes = 0;
         std::string last_text;
+        std::string turn_text;
+        std::string last_asr_segment;
         bool mic_active = false;
         bool utterance_submitted = false;
         uint32_t asr_cooldown_bytes = 0;
@@ -462,8 +558,10 @@ int start_stream_server(int port, const std::string& save_dir,
             }
 
             if (first_frame) { expected_seq = seq; first_frame = false; }
-            else if (seq != expected_seq)
+            else if (seq != expected_seq) {
                 std::cerr << "[Warning] 帧序号跳变! 期望:" << expected_seq << " 实际:" << seq << std::endl;
+                stream_seq_gap++;
+            }
             expected_seq = seq + 1;
 
             std::vector<uint8_t> payload_buf;
@@ -476,13 +574,25 @@ int start_stream_server(int port, const std::string& save_dir,
             if (type == AI_FRAME_MIC_START) {
                 if (!tts_model_path.empty() && tts_pipeline_is_busy()) {
                     std::cout << "[TTS] 新一轮录音开始，打断当前播报" << std::endl;
+                    long long interrupt_begin_ms = metric_now_ms();
                     tts_pipeline_interrupt();
+                    std::cout << "[METRIC] interrupt turn=" << g_turn_id.load()
+                              << " busy=1 interrupt_ms=" << (metric_now_ms() - interrupt_begin_ms) << std::endl;
                 } else if (!tts_model_path.empty()) {
+                    long long cancel_begin_ms = metric_now_ms();
                     send_tts_cancel();
+                    std::cout << "[METRIC] interrupt turn=" << g_turn_id.load()
+                              << " busy=0 interrupt_ms=" << (metric_now_ms() - cancel_begin_ms) << std::endl;
                 }
+                uint64_t new_turn = g_turn_id.fetch_add(1) + 1;
+                metric_reset_turn();
+                g_metric_mic_start_ms = metric_now_ms();
+                turn_pcm_bytes = 0;
                 mic_active = true;
                 utterance_submitted = false;
                 last_text.clear();
+                turn_text.clear();
+                last_asr_segment.clear();
                 asr_reset();
                 recorder.start_segment(sample_rate ? sample_rate : 16000,
                                        channels ? channels : 1);
@@ -491,19 +601,31 @@ int start_stream_server(int port, const std::string& save_dir,
                 asr_cooldown_bytes = (sr / 5) * ch * sizeof(int16_t); // 200ms，防 TTS 尾音/混响自激
                 std::cout << "[MIC] START rate=" << sample_rate
                           << " channels=" << channels << std::endl;
+                std::cout << "[METRIC] mic_start turn=" << new_turn
+                          << " sample_rate=" << sr
+                          << " channels=" << ch << std::endl;
                 continue;
             }
 
             if (type == AI_FRAME_MIC_END) {
                 mic_active = false;
+                long long mic_end_ms = metric_now_ms();
+                g_metric_mic_end_ms = mic_end_ms;
                 std::cout << "[MIC] END" << std::endl;
-                if (!utterance_submitted && !last_text.empty()) {
-                    std::cout << "[ASR] 断句完成: " << last_text << std::endl;
+                std::cout << "[METRIC] mic_end turn=" << g_turn_id.load()
+                          << " record_ms=" << (g_metric_mic_start_ms.load() > 0 ? mic_end_ms - g_metric_mic_start_ms.load() : -1)
+                          << " pcm_bytes=" << turn_pcm_bytes << std::endl;
+                append_asr_segment(turn_text, last_asr_segment, last_text);
+                if (!utterance_submitted && !turn_text.empty()) {
+                    std::cout << "[ASR] 按键提交: " << turn_text << std::endl;
+                    metric_mark_asr_final(turn_text);
                     if (!tts_model_path.empty() && tts_pipeline_is_busy()) {
                         std::cout << "[TTS] 播放中，忽略此句" << std::endl;
                     } else if (!llm_model_path.empty()) {
+                        long long submit_ms = metric_now_ms();
+                        g_metric_llm_submit_ms = submit_ms;
                         { std::lock_guard<std::mutex> lk(g_queue_mutex);
-                          g_task_queue.push({last_text, false}); }
+                          g_task_queue.push({turn_text, false, g_turn_id.load(), submit_ms}); }
                         g_queue_cv.notify_one();
                         utterance_submitted = true;
                     }
@@ -511,6 +633,8 @@ int start_stream_server(int port, const std::string& save_dir,
                 recorder.end_segment();
                 asr_reset();
                 last_text.clear();
+                turn_text.clear();
+                last_asr_segment.clear();
                 continue;
             }
 
@@ -519,7 +643,16 @@ int start_stream_server(int port, const std::string& save_dir,
             }
 
             if (payload_size > 0) {
-                if (mic_active) recorder.write_pcm(payload_buf.data(), payload_buf.size());
+                long long frame_now_ms = metric_now_ms();
+                stream_pcm_frames++;
+                stream_pcm_bytes += payload_size;
+                if (stream_first_pcm_ms == 0) stream_first_pcm_ms = frame_now_ms;
+                stream_last_pcm_ms = frame_now_ms;
+
+                if (mic_active) {
+                    recorder.write_pcm(payload_buf.data(), payload_buf.size());
+                    turn_pcm_bytes += payload_buf.size();
+                }
 
                 if (asr_cooldown_bytes > 0) {
                     if (payload_size <= asr_cooldown_bytes) {
@@ -564,16 +697,21 @@ int start_stream_server(int port, const std::string& save_dir,
                     if (!last_text.empty()) {
                         std::cout << "[ASR] 断句完成: " << last_text << std::endl;
                         if (mic_active) {
-                            // 按键式交互下，业务提交以 MIC_END 为准；录音期间只保留最新识别文本。
+                            // 按键式交互下，业务提交以 MIC_END 为准；录音期间的 ASR endpoint 只做内部切段。
+                            append_asr_segment(turn_text, last_asr_segment, last_text);
                             asr_reset();
+                            last_text.clear();
                             continue;
                         }
+                        metric_mark_asr_final(last_text);
                         if (!tts_model_path.empty() && (tts_pipeline_is_busy() || in_cooldown)) {
                             if (in_cooldown) std::cout << "[TTS] 冷却期，忽略此句" << std::endl;
                             else            std::cout << "[TTS] 播放中，忽略此句" << std::endl;
                         } else if (!llm_model_path.empty()) {
+                            long long submit_ms = metric_now_ms();
+                            g_metric_llm_submit_ms = submit_ms;
                             { std::lock_guard<std::mutex> lk(g_queue_mutex);
-                              g_task_queue.push({last_text, false}); }
+                              g_task_queue.push({last_text, false, g_turn_id.load(), submit_ms}); }
                             g_queue_cv.notify_one();
                             utterance_submitted = true;
                         }
@@ -587,13 +725,22 @@ int start_stream_server(int port, const std::string& save_dir,
         close(client_fd);
         if (g_client_fd.load() == client_fd) g_client_fd = -1;
         recorder.close();
+        long long stream_duration_ms = stream_first_pcm_ms > 0 ? stream_last_pcm_ms - stream_first_pcm_ms : 0;
+        double avg_frame_interval_ms = stream_pcm_frames > 1
+            ? static_cast<double>(stream_duration_ms) / (stream_pcm_frames - 1)
+            : 0.0;
+        std::cout << "[METRIC] stream frames=" << stream_pcm_frames
+                  << " bytes=" << stream_pcm_bytes
+                  << " seq_gap=" << stream_seq_gap
+                  << " duration_ms=" << stream_duration_ms
+                  << " avg_frame_interval_ms=" << avg_frame_interval_ms << std::endl;
         std::cout << "[-] 开发板连接断开。" << std::endl;
         asr_reset();
 
         if (!llm_model_path.empty()) {
             { std::lock_guard<std::mutex> lk(g_queue_mutex);
               while (!g_task_queue.empty()) g_task_queue.pop();
-              g_task_queue.push({"", true}); }
+              g_task_queue.push({"", true, g_turn_id.load(), metric_now_ms()}); }
             g_queue_cv.notify_one();
         }
     }
