@@ -2,6 +2,7 @@ build/
 build-pc/
 server/received_audio/
 docs/
+PPT/
 *.docx
 *.gguf
 *.wav
