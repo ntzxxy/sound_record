@@ -12,6 +12,11 @@ extern "C" {
  */
 typedef void (*llm_callback_t)(const char *text, int is_final);
 
+typedef struct {
+    int max_tokens;
+    float temperature;
+} llm_once_params_t;
+
 /**
  * 初始化 LLM 引擎（加载模型）
  * @param model_path  GGUF 模型文件路径
@@ -27,6 +32,17 @@ int llm_init(const char *model_path);
  * @return 0 成功，-1 失败
  */
 int llm_chat(const char *prompt, llm_callback_t callback);
+
+/**
+ * 无状态短文本生成，用于意图分类等不应污染聊天历史的任务。
+ * 内部使用独立 llama_context，每次调用前清空该 context。
+ */
+int llm_generate_once(const char *system_prompt,
+                      const char *user_message,
+                      const llm_once_params_t *params,
+                      char *output,
+                      int output_size,
+                      int *latency_ms);
 
 /**
  * 清空对话上下文（KV Cache），开始新一轮对话

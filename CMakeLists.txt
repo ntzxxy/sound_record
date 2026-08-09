@@ -19,6 +19,7 @@ endif()
 # 添加子目录，CMake 会按顺序进入这两个目录执行里面的 CMakeLists.txt
 add_subdirectory(libaudio)
 add_subdirectory(libnet)
+add_subdirectory(libassistant)
 add_subdirectory(src)
 # ASR 引擎仅在 PC/Jetson（非 arm 交叉编译）时构建
 option(BUILD_ASR "Build sherpa-onnx ASR engine" ON)
@@ -54,4 +55,10 @@ if(BUILD_SERVER AND CMAKE_CROSSCOMPILING)
 endif()
 if(BUILD_SERVER)
     add_subdirectory(server)
+endif()
+
+option(BUILD_ASSISTANT_TOOLS "Build assistant context demo and tests" ON)
+if(BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING)
+    add_subdirectory(tools)
+    add_subdirectory(tests)
 endif()

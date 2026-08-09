@@ -12,3 +12,7 @@ cmake-build-*/
 *.swp
 *.swo
 *~
+
+# Codex task files
+.codex-tasks/
+* TO DO list.csv

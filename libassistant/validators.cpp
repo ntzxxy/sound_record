@@ -1,0 +1,60 @@
+#include "validators.h"
+
+namespace assistant {
+
+bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std::string* error) const {
+    if (!command.valid || command.device_id.empty()) {
+        if (error) *error = "device_not_found";
+        return false;
+    }
+    if (command.room.empty() || command.device.empty() || command.action.empty()) {
+        if (error) *error = "missing_device_slot";
+        return false;
+    }
+    if (command.action != "TURN_ON" && command.action != "TURN_OFF" &&
+        command.action != "SET_TEMPERATURE") {
+        if (error) *error = "unsupported_action";
+        return false;
+    }
+    if (command.device == "灯" && command.action == "SET_TEMPERATURE") {
+        if (error) *error = "light_temperature_unsupported";
+        return false;
+    }
+    if (command.action == "SET_TEMPERATURE") {
+        if (!command.value || *command.value < 16.0 || *command.value > 30.0) {
+            if (error) *error = "invalid_temperature";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MemoryItemValidator::validate(const MemoryItem& item, std::string* error) const {
+    if (item.category != "USER_PREFERENCE" && item.category != "OBJECT_LOCATION") {
+        if (error) *error = "invalid_memory_category";
+        return false;
+    }
+    if (item.subject.empty() || item.attribute.empty() || item.value.empty()) {
+        if (error) *error = "missing_memory_slot";
+        return false;
+    }
+    return true;
+}
+
+bool DeviceEventValidator::validate(const DeviceEvent& event, std::string* error) const {
+    if (event.device.empty()) {
+        if (error) *error = "missing_device";
+        return false;
+    }
+    if (event.description.empty()) {
+        if (error) *error = "missing_fault_description";
+        return false;
+    }
+    if (event.event_type.empty()) {
+        if (error) *error = "missing_event_type";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace assistant

@@ -6,6 +6,7 @@
 #include "net.h"
 #include "asr.h"
 #include "chat_agent.h"
+#include "assistant_service.h"
 #include "tts_pipeline.h"
 #include <atomic>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <thread>
 #include <vector>
 #include <fstream>
+#include <memory>
 #include <ctime>
 #include <cstring>
 #include <unistd.h>
@@ -27,7 +29,7 @@
 #include <climits>
 #include <cctype>
 
-static void save_wav_file(const std::string& filename, const std::vector<uint8_t>& pcm_data, uint32_t sample_rate, uint16_t channels) {
+[[maybe_unused]] static void save_wav_file(const std::string& filename, const std::vector<uint8_t>& pcm_data, uint32_t sample_rate, uint16_t channels) {
     std::ofstream ofs(filename, std::ios::binary);
     if (!ofs.is_open()) return;
 
@@ -397,6 +399,12 @@ static void flush_tts_segments(std::string& pending, bool final) {
     }
 }
 
+static void push_natural_reply_to_tts(const std::string& reply) {
+    if (reply.empty()) return;
+    std::string pending = reply;
+    flush_tts_segments(pending, true);
+}
+
 static void append_asr_segment(std::string& full_text,
                                std::string& last_segment,
                                const std::string& segment) {
@@ -410,7 +418,7 @@ static void append_asr_segment(std::string& full_text,
     last_segment = segment;
 }
 
-static void llm_worker() {
+static void llm_worker(assistant::AssistantService* assistant_service) {
     while (g_llm_running) {
         ChatTask task;
         {
@@ -430,12 +438,31 @@ static void llm_worker() {
                       << " wait_ms=" << (worker_begin_ms - task.submit_ms)
                       << " text_chars=" << utf8_count_chars(task.text, task.text.size()) << std::endl;
         }
-        std::cout << "[Agent] " << std::flush;
         static std::string g_full;
         static std::string g_tts_pending;
         g_full.clear();
         g_tts_pending.clear();
-        agent_chat(task.text.c_str(), [](const char *text, int is_final) {
+
+        assistant::ServiceResult service_result;
+        if (assistant_service) {
+            service_result = assistant_service->process(task.text);
+        } else {
+            service_result.call_llm = true;
+        }
+
+        if (!service_result.call_llm) {
+            if (!service_result.fixed_reply.empty()) {
+                std::cout << "[Agent] " << std::flush;
+                std::cout << service_result.fixed_reply << std::endl;
+                push_natural_reply_to_tts(service_result.fixed_reply);
+            }
+            continue;
+        }
+
+        std::cout << "[Agent] " << std::flush;
+        agent_chat_with_context(task.text.c_str(),
+                                service_result.runtime_context.c_str(),
+                                [](const char *text, int is_final) {
             if (text && text[0]) {
                 long long now = metric_now_ms();
                 if (!g_metric_llm_first_token_seen.exchange(true)) {
@@ -492,12 +519,20 @@ int start_stream_server(int port, const std::string& save_dir,
     }
     std::cout << "[ASR] 模型加载成功" << std::endl;
 
+    std::unique_ptr<assistant::AssistantService> assistant_service;
     if (!llm_model_path.empty()) {
         if (agent_init(llm_model_path.c_str(), nullptr) != 0) {
             std::cerr << "[Agent] 模型加载失败: " << llm_model_path << std::endl;
             asr_destroy(); return -1;
         }
-        g_llm_thread = std::thread(llm_worker);
+        assistant_service = std::make_unique<assistant::AssistantService>("./runtime/assistant_memory_v2.tsv");
+        if (!assistant_service->initialize()) {
+            std::cerr << "[AssistantContext] 初始化失败" << std::endl;
+            agent_destroy();
+            asr_destroy();
+            return -1;
+        }
+        g_llm_thread = std::thread(llm_worker, assistant_service.get());
         std::cout << "[Agent] 模型加载成功, LLM线程已启动" << std::endl;
     }
 
