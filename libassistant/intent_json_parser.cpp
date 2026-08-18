@@ -135,6 +135,42 @@ std::optional<double> getOptionalNumberField(const std::string& json, const std:
     return value;
 }
 
+std::vector<std::string> getStringArrayField(const std::string& json, const std::string& key) {
+    std::vector<std::string> values;
+    const std::size_t start = valueStart(json, findKey(json, key));
+    if (start == std::string::npos || start >= json.size() || json[start] != '[') {
+        return values;
+    }
+
+    for (std::size_t pos = start + 1; pos < json.size();) {
+        while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+        if (pos >= json.size() || json[pos] == ']') break;
+        if (json[pos] == ',') {
+            ++pos;
+            continue;
+        }
+
+        std::string value;
+        if (!parseJsonStringAt(json, pos, &value)) break;
+        values.push_back(value);
+
+        ++pos;
+        bool escaped = false;
+        for (; pos < json.size(); ++pos) {
+            const char c = json[pos];
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                ++pos;
+                break;
+            }
+        }
+    }
+    return values;
+}
+
 }  // namespace
 
 bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std::string* error) const {
@@ -200,6 +236,7 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         parsed.memory_query = query;
     }
 
+    parsed.missing_slots = getStringArrayField(parsed.raw_json, "missing_slots");
     getStringField(parsed.raw_json, "clarification_question", &parsed.clarification_question);
     parsed.json_valid = true;
     *result = parsed;

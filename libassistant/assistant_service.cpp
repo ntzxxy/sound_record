@@ -1,8 +1,11 @@
 #include "assistant_service.h"
 
+#include <cctype>
 #include <ctime>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <vector>
 
 namespace assistant {
 namespace {
@@ -40,6 +43,102 @@ std::string makeDeviceReply(const ResolvedDeviceCommand& command) {
 
 std::string defaultClarification() {
     return "这个指令还不够明确，请说明房间、设备和动作。";
+}
+
+bool containsText(const std::string& text, const std::string& needle) {
+    return text.find(needle) != std::string::npos;
+}
+
+bool hasAnyDeviceSlot(const DeviceCommand& command) {
+    return !command.room.empty() || !command.device.empty() ||
+           !command.action.empty() || command.value.has_value();
+}
+
+bool hasSlot(const std::vector<std::string>& slots, const std::string& slot) {
+    for (const auto& item : slots) {
+        if (item == slot) return true;
+    }
+    return false;
+}
+
+std::vector<std::string> missingDeviceSlots(const DeviceCommand& command) {
+    std::vector<std::string> missing;
+    if (command.room.empty()) missing.push_back("room");
+    if (command.device.empty()) missing.push_back("device");
+    if (command.action.empty()) missing.push_back("action");
+    if (command.action == "SET_TEMPERATURE" && !command.value) {
+        missing.push_back("value");
+    }
+    return missing;
+}
+
+DeviceCommand mergeDeviceCommand(const DeviceCommand& base,
+                                 const DeviceCommand& patch) {
+    DeviceCommand merged = base;
+    if (!patch.room.empty()) merged.room = patch.room;
+    if (!patch.device.empty()) merged.device = patch.device;
+    if (!patch.action.empty()) merged.action = patch.action;
+    if (patch.value) merged.value = patch.value;
+    return merged;
+}
+
+std::optional<double> extractFirstNumber(const std::string& text) {
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(text[i]))) continue;
+        char* end = nullptr;
+        const double value = std::strtod(text.c_str() + i, &end);
+        if (end != text.c_str() + i) return value;
+    }
+    return std::nullopt;
+}
+
+std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
+    DeviceCommand command;
+    if (containsText(text, "卧室")) {
+        command.room = "卧室";
+    } else if (containsText(text, "客厅")) {
+        command.room = "客厅";
+    }
+
+    if (containsText(text, "空调")) {
+        command.device = "空调";
+    } else if (containsText(text, "灯")) {
+        command.device = "灯";
+    }
+
+    if (containsText(text, "打开") || containsText(text, "开启")) {
+        command.action = "TURN_ON";
+    } else if (containsText(text, "关闭") || containsText(text, "关掉")) {
+        command.action = "TURN_OFF";
+    } else if (containsText(text, "设置") || containsText(text, "调到") ||
+               containsText(text, "温度")) {
+        command.action = "SET_TEMPERATURE";
+    }
+
+    command.value = extractFirstNumber(text);
+    if (command.value && command.action.empty()) {
+        command.action = "SET_TEMPERATURE";
+    }
+
+    if (!hasAnyDeviceSlot(command)) return std::nullopt;
+    return command;
+}
+
+std::string makeSlotClarification(const DeviceCommand& command,
+                                  const std::vector<std::string>& missing) {
+    if (hasSlot(missing, "room") && !command.device.empty()) {
+        return "请问要控制哪个房间的" + command.device + "？";
+    }
+    if (hasSlot(missing, "device") && !command.room.empty()) {
+        return "请问要控制" + command.room + "的哪个设备？";
+    }
+    if (hasSlot(missing, "action") && !command.room.empty() && !command.device.empty()) {
+        return "请问要对" + command.room + command.device + "执行什么操作？";
+    }
+    if (hasSlot(missing, "value") && command.action == "SET_TEMPERATURE") {
+        return "请问要设置到多少度？";
+    }
+    return defaultClarification();
 }
 
 std::string noMemoryContext() {
@@ -83,10 +182,50 @@ bool AssistantService::initialize() {
 
 ServiceResult AssistantService::process(const std::string& user_input) {
     IntentResult intent = intent_preprocessor_.analyze(user_input);
+    return processAnalyzed(user_input, intent);
+}
+
+ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
+                                                const IntentResult& analyzed_intent) {
+    IntentResult intent = analyzed_intent;
     ServiceResult result;
     result.task_type = intent.intent;
 
     std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
+
+    if (pending_device_command_) {
+        std::optional<DeviceCommand> supplement = intent.device_command;
+        if (!supplement || !hasAnyDeviceSlot(*supplement)) {
+            supplement = inferDeviceSlotsFromText(user_input);
+        }
+
+        if (supplement && hasAnyDeviceSlot(*supplement)) {
+            DeviceCommand merged = mergeDeviceCommand(*pending_device_command_, *supplement);
+            std::vector<std::string> missing = missingDeviceSlots(merged);
+            if (missing.empty()) {
+                intent.intent = IntentType::DeviceControl;
+                intent.device_command = merged;
+                result.task_type = IntentType::DeviceControl;
+                pending_device_command_.reset();
+                pending_device_turns_remaining_ = 0;
+                std::cout << "[PendingDeviceCommand] merged=complete" << std::endl;
+            } else {
+                pending_device_command_ = merged;
+                pending_device_turns_remaining_ = 1;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = makeSlotClarification(merged, missing);
+                std::cout << "[PendingDeviceCommand] merged=incomplete missing=";
+                for (const auto& slot : missing) std::cout << slot << ' ';
+                std::cout << std::endl;
+                return result;
+            }
+        } else if (--pending_device_turns_remaining_ <= 0) {
+            pending_device_command_.reset();
+            pending_device_turns_remaining_ = 0;
+            std::cout << "[PendingDeviceCommand] expired" << std::endl;
+        }
+    }
 
     switch (intent.intent) {
         case IntentType::GeneralChat: {
@@ -100,6 +239,19 @@ ServiceResult AssistantService::process(const std::string& user_input) {
                 result.call_llm = false;
                 result.fixed_reply = defaultClarification();
                 std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
+                break;
+            }
+
+            std::vector<std::string> missing = missingDeviceSlots(*intent.device_command);
+            if (!missing.empty()) {
+                pending_device_command_ = *intent.device_command;
+                pending_device_turns_remaining_ = 1;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = makeSlotClarification(*intent.device_command, missing);
+                std::cout << "[PendingDeviceCommand] saved from incomplete control missing=";
+                for (const auto& slot : missing) std::cout << slot << ' ';
+                std::cout << std::endl;
                 break;
             }
 
@@ -204,6 +356,23 @@ ServiceResult AssistantService::process(const std::string& user_input) {
         }
 
         case IntentType::Clarify: {
+            if (intent.device_command && hasAnyDeviceSlot(*intent.device_command)) {
+                std::vector<std::string> missing = intent.missing_slots.empty()
+                                                       ? missingDeviceSlots(*intent.device_command)
+                                                       : intent.missing_slots;
+                if (!missing.empty()) {
+                    pending_device_command_ = *intent.device_command;
+                    pending_device_turns_remaining_ = 1;
+                    result.call_llm = false;
+                    result.fixed_reply = intent.clarification_question.empty()
+                                             ? makeSlotClarification(*intent.device_command, missing)
+                                             : intent.clarification_question;
+                    std::cout << "[PendingDeviceCommand] saved from clarify missing=";
+                    for (const auto& slot : missing) std::cout << slot << ' ';
+                    std::cout << std::endl;
+                    break;
+                }
+            }
             result.call_llm = false;
             result.fixed_reply = intent.clarification_question.empty()
                                      ? defaultClarification()

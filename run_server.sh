@@ -13,7 +13,7 @@ SAVE_DIR="${SCRIPT_DIR}/voice_records"
 if [ ! -x "${BUILD_DIR}/bin/stream_receiver" ]; then
     echo "[Error] stream_receiver not found or not executable: ${BUILD_DIR}/bin/stream_receiver"
     echo "        Build it first, for example:"
-    echo "        cmake --build ${BUILD_DIR} --target stream_receiver"
+    echo "        cmake --build ${BUILD_DIR} --target stream_receiver -j1"
     exit 1
 fi
 

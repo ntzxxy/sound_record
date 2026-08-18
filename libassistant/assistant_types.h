@@ -62,6 +62,7 @@ struct IntentResult {
     std::optional<DeviceEvent> device_event;
     std::optional<MemoryItem> memory;
     std::optional<MemoryQuery> memory_query;
+    std::vector<std::string> missing_slots;
     std::string clarification_question;
     std::string raw_json;
     int intent_latency_ms{0};

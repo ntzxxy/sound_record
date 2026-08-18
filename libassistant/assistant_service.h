@@ -8,6 +8,7 @@
 #include "memory_store.h"
 #include "validators.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,8 @@ public:
 
     bool initialize();
     ServiceResult process(const std::string& user_input);
+    ServiceResult processAnalyzed(const std::string& user_input,
+                                  const IntentResult& analyzed_intent);
     std::vector<MemoryItem> memorySnapshot() const;
     std::vector<DeviceEvent> eventSnapshot() const;
 
@@ -32,6 +35,8 @@ private:
     MemoryStore memory_store_;
     EventLog event_log_;
     ContextBuilder context_builder_;
+    std::optional<DeviceCommand> pending_device_command_;
+    int pending_device_turns_remaining_{0};
 };
 
 }  // namespace assistant

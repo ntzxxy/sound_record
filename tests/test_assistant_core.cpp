@@ -1,4 +1,5 @@
 #include "context_builder.h"
+#include "assistant_service.h"
 #include "device_registry.h"
 #include "event_log.h"
 #include "intent_json_parser.h"
@@ -8,10 +9,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 
 namespace {
 
 using assistant::ContextBuilder;
+using assistant::AssistantService;
 using assistant::DeviceCommandValidator;
 using assistant::DeviceRegistry;
 using assistant::DeviceEvent;
@@ -24,6 +27,7 @@ using assistant::MemoryItem;
 using assistant::MemoryItemValidator;
 using assistant::MemoryQuery;
 using assistant::MemoryStore;
+using assistant::ServiceResult;
 
 #define CHECK(condition) \
     do { \
@@ -70,6 +74,18 @@ DeviceEvent makeEvent(const std::string& room,
     event.description = description;
     event.timestamp = timestamp;
     return event;
+}
+
+assistant::DeviceCommand makeCommand(const std::string& room,
+                                     const std::string& device,
+                                     const std::string& action,
+                                     std::optional<double> value = std::nullopt) {
+    assistant::DeviceCommand command;
+    command.room = room;
+    command.device = device;
+    command.action = action;
+    command.value = value;
+    return command;
 }
 
 int countTriple(const std::vector<MemoryItem>& items,
@@ -151,6 +167,25 @@ int main() {
         IntentJsonParser parser;
         IntentResult result;
         std::string error;
+        const std::string json =
+            "{\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\","
+            "\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null},"
+            "\"device_event\":null,\"memory\":null,\"memory_query\":null,"
+            "\"missing_slots\":[\"room\"],"
+            "\"clarification_question\":\"请问要打开哪个房间的空调？\"}";
+        CHECK(parser.parse(json, &result, &error));
+        CHECK(result.intent == IntentType::Clarify);
+        CHECK(result.device_command);
+        CHECK(result.device_command->device == "空调");
+        CHECK(result.device_command->action == "TURN_ON");
+        CHECK(result.missing_slots.size() == 1);
+        CHECK(result.missing_slots[0] == "room");
+    }
+
+    {
+        IntentJsonParser parser;
+        IntentResult result;
+        std::string error;
         CHECK(!parser.parse("not json", &result, &error));
         CHECK(error == "no_json_object");
     }
@@ -183,6 +218,73 @@ int main() {
         std::string error;
         CHECK(!validator.validate(*resolved, &error));
         CHECK(error == "light_temperature_unsupported");
+    }
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult first;
+        first.intent = IntentType::Clarify;
+        first.device_command = makeCommand("", "空调", "TURN_ON");
+        first.missing_slots = {"room"};
+        first.clarification_question = "请问要打开哪个房间的空调？";
+
+        ServiceResult clarify = service.processAnalyzed("帮我把空调打开", first);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+        CHECK(clarify.fixed_reply == "请问要打开哪个房间的空调？");
+
+        IntentResult second;
+        second.intent = IntentType::GeneralChat;
+        ServiceResult completed = service.processAnalyzed("卧室", second);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_ac");
+        CHECK(completed.fixed_reply.find("打开卧室空调") != std::string::npos);
+    }
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult first;
+        first.intent = IntentType::Clarify;
+        first.device_command = makeCommand("卧室", "", "TURN_ON");
+        first.missing_slots = {"device"};
+        first.clarification_question = "请问要打开卧室的哪个设备？";
+
+        ServiceResult clarify = service.processAnalyzed("帮我打开卧室的", first);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+
+        IntentResult second;
+        second.intent = IntentType::GeneralChat;
+        ServiceResult completed = service.processAnalyzed("空调", second);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_ac");
+    }
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult first;
+        first.intent = IntentType::Clarify;
+        first.device_command = makeCommand("卧室", "空调", "SET_TEMPERATURE");
+        first.missing_slots = {"value"};
+        first.clarification_question = "请问要设置到多少度？";
+
+        ServiceResult clarify = service.processAnalyzed("把卧室空调调到", first);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+
+        IntentResult second;
+        second.intent = IntentType::GeneralChat;
+        ServiceResult completed = service.processAnalyzed("26度", second);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_ac");
+        CHECK(completed.device_command->value);
+        CHECK(static_cast<int>(*completed.device_command->value) == 26);
     }
 
     {
