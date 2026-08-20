@@ -16,7 +16,10 @@ bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std:
         if (error) *error = "unsupported_action";
         return false;
     }
-    if (command.device == "灯" && command.action == "SET_TEMPERATURE") {
+    const bool is_light = command.device == "灯" ||
+                          command.device_id == "bedroom_light" ||
+                          command.device_id == "living_room_light";
+    if (is_light && command.action == "SET_TEMPERATURE") {
         if (error) *error = "light_temperature_unsupported";
         return false;
     }

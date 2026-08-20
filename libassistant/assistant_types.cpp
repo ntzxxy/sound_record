@@ -11,6 +11,7 @@ const char* toString(IntentType type) {
         case IntentType::DeviceFault: return "DEVICE_FAULT";
         case IntentType::MemoryWrite: return "MEMORY_WRITE";
         case IntentType::MemoryQuery: return "MEMORY_QUERY";
+        case IntentType::MemoryDelete: return "MEMORY_DELETE";
         case IntentType::Clarify: return "CLARIFY";
     }
     return "CLARIFY";
@@ -22,6 +23,7 @@ std::optional<IntentType> intentTypeFromString(const std::string& value) {
     if (value == "DEVICE_FAULT") return IntentType::DeviceFault;
     if (value == "MEMORY_WRITE") return IntentType::MemoryWrite;
     if (value == "MEMORY_QUERY") return IntentType::MemoryQuery;
+    if (value == "MEMORY_DELETE") return IntentType::MemoryDelete;
     if (value == "CLARIFY") return IntentType::Clarify;
     return std::nullopt;
 }

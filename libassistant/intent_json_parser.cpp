@@ -135,6 +135,14 @@ std::optional<double> getOptionalNumberField(const std::string& json, const std:
     return value;
 }
 
+std::optional<bool> getOptionalBoolField(const std::string& json, const std::string& key) {
+    const std::size_t start = valueStart(json, findKey(json, key));
+    if (start == std::string::npos) return std::nullopt;
+    if (json.compare(start, 4, "true") == 0) return true;
+    if (json.compare(start, 5, "false") == 0) return false;
+    return std::nullopt;
+}
+
 std::vector<std::string> getStringArrayField(const std::string& json, const std::string& key) {
     std::vector<std::string> values;
     const std::size_t start = valueStart(json, findKey(json, key));
@@ -234,6 +242,15 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         getStringField(query_json, "subject", &query.subject);
         getStringField(query_json, "attribute", &query.attribute);
         parsed.memory_query = query;
+    }
+
+    std::string delete_json = getObjectField(parsed.raw_json, "memory_delete", &is_null);
+    if (!delete_json.empty()) {
+        MemoryDeleteRequest request;
+        getStringField(delete_json, "category", &request.category);
+        getStringField(delete_json, "subject", &request.subject);
+        request.delete_all = getOptionalBoolField(delete_json, "delete_all").value_or(false);
+        parsed.memory_delete = request;
     }
 
     parsed.missing_slots = getStringArrayField(parsed.raw_json, "missing_slots");

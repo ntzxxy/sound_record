@@ -45,8 +45,50 @@ std::string defaultClarification() {
     return "这个指令还不够明确，请说明房间、设备和动作。";
 }
 
+std::string makeUnsupportedDeviceReply(const DeviceCommand& command) {
+    return "当前没有找到" + command.room + command.device + "，无法执行。";
+}
+
+std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
+                                          const std::string& error) {
+    if (error == "light_temperature_unsupported") {
+        return command.room + command.device + "不支持温度设置。";
+    }
+    if (error == "invalid_temperature") {
+        return "空调温度只支持设置在16到30度之间。";
+    }
+    return "这个设备指令暂时不支持。";
+}
+
 bool containsText(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
+}
+
+bool isCancelText(const std::string& text) {
+    return containsText(text, "取消") || containsText(text, "算了") ||
+           containsText(text, "不用了") || containsText(text, "先不弄") ||
+           containsText(text, "停止");
+}
+
+bool isPreferenceMemoryText(const std::string& text) {
+    return containsText(text, "我喜欢") || containsText(text, "我习惯") ||
+           containsText(text, "以后默认") || containsText(text, "记住我") ||
+           containsText(text, "偏好");
+}
+
+bool hasDeviceWord(const std::string& text) {
+    return containsText(text, "空调") || containsText(text, "灯");
+}
+
+bool hasControlVerb(const std::string& text) {
+    return containsText(text, "打开") || containsText(text, "开启") ||
+           containsText(text, "关闭") || containsText(text, "关掉") ||
+           containsText(text, "设置") || containsText(text, "设为") ||
+           containsText(text, "调到") || containsText(text, "调成");
+}
+
+bool looksLikeDeviceControlText(const std::string& text) {
+    return hasDeviceWord(text) && hasControlVerb(text) && !isPreferenceMemoryText(text);
 }
 
 bool hasAnyDeviceSlot(const DeviceCommand& command) {
@@ -92,12 +134,71 @@ std::optional<double> extractFirstNumber(const std::string& text) {
     return std::nullopt;
 }
 
+std::optional<int> chineseDigit(const std::string& text, std::size_t* used) {
+    struct Digit {
+        const char* word;
+        int value;
+    };
+    static const Digit kDigits[] = {
+        {"零", 0}, {"一", 1}, {"二", 2}, {"两", 2}, {"三", 3}, {"四", 4},
+        {"五", 5}, {"六", 6}, {"七", 7}, {"八", 8}, {"九", 9}
+    };
+    for (const auto& digit : kDigits) {
+        const std::string word = digit.word;
+        if (text.compare(0, word.size(), word) == 0) {
+            if (used) *used = word.size();
+            return digit.value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<double> extractChineseNumber(const std::string& text) {
+    const std::string ten = "十";
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        std::size_t used = 0;
+        if (text.compare(i, ten.size(), ten) == 0) {
+            std::size_t ones_used = 0;
+            int value = 10;
+            if (auto ones = chineseDigit(text.substr(i + ten.size()), &ones_used)) {
+                value += *ones;
+            }
+            return value;
+        }
+
+        auto tens = chineseDigit(text.substr(i), &used);
+        if (!tens) continue;
+        std::size_t pos = i + used;
+        if (text.compare(pos, ten.size(), ten) == 0) {
+            int value = *tens * 10;
+            pos += ten.size();
+            std::size_t ones_used = 0;
+            if (auto ones = chineseDigit(text.substr(pos), &ones_used)) {
+                value += *ones;
+            }
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<double> extractNumber(const std::string& text) {
+    if (auto value = extractFirstNumber(text)) return value;
+    return extractChineseNumber(text);
+}
+
 std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
     DeviceCommand command;
     if (containsText(text, "卧室")) {
         command.room = "卧室";
     } else if (containsText(text, "客厅")) {
         command.room = "客厅";
+    } else if (containsText(text, "厨房")) {
+        command.room = "厨房";
+    } else if (containsText(text, "卫生间")) {
+        command.room = "卫生间";
+    } else if (containsText(text, "厕所")) {
+        command.room = "卫生间";
     }
 
     if (containsText(text, "空调")) {
@@ -110,18 +211,25 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
         command.action = "TURN_ON";
     } else if (containsText(text, "关闭") || containsText(text, "关掉")) {
         command.action = "TURN_OFF";
-    } else if (containsText(text, "设置") || containsText(text, "调到") ||
+    } else if (containsText(text, "设置") || containsText(text, "设为") ||
+               containsText(text, "调到") || containsText(text, "调成") ||
                containsText(text, "温度")) {
         command.action = "SET_TEMPERATURE";
     }
 
-    command.value = extractFirstNumber(text);
+    command.value = extractNumber(text);
     if (command.value && command.action.empty()) {
         command.action = "SET_TEMPERATURE";
     }
 
     if (!hasAnyDeviceSlot(command)) return std::nullopt;
     return command;
+}
+
+DeviceCommand applyDeterministicDeviceSlots(const DeviceCommand& command,
+                                            const std::optional<DeviceCommand>& inferred) {
+    if (!inferred) return command;
+    return mergeDeviceCommand(command, *inferred);
 }
 
 std::string makeSlotClarification(const DeviceCommand& command,
@@ -161,6 +269,72 @@ std::string makeDeviceFaultContext(const DeviceEvent& event) {
            "- 这只是异常日志记录，不代表设备已经检查或修复。请自然回复用户，并避免声称故障已解决。\n";
 }
 
+bool looksLikeMemoryDeleteText(const std::string& text) {
+    return containsText(text, "删除") || containsText(text, "清除") ||
+           containsText(text, "清空") || containsText(text, "忘掉") ||
+           containsText(text, "不要记住");
+}
+
+void eraseAll(std::string* text, const std::string& needle) {
+    if (!text || needle.empty()) return;
+    std::size_t pos = 0;
+    while ((pos = text->find(needle, pos)) != std::string::npos) {
+        text->erase(pos, needle.size());
+    }
+}
+
+std::string trimAsciiSpaces(const std::string& text) {
+    std::size_t begin = 0;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) {
+        ++begin;
+    }
+
+    std::size_t end = text.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+std::string inferMemoryDeleteSubject(const std::string& text) {
+    std::string subject = text;
+    const std::vector<std::string> noise_words = {
+        "请", "帮我", "把", "给我", "一下", "掉", "相关", "这条", "这个",
+        "删除", "清除", "清空", "忘掉", "不要记住", "不用记住", "别记住",
+        "我", "的", "关于", "记忆", "记录", "信息"
+    };
+    for (const auto& word : noise_words) {
+        eraseAll(&subject, word);
+    }
+    return trimAsciiSpaces(subject);
+}
+
+std::string inferMemoryDeleteCategory(const std::string& text,
+                                      const std::string& subject) {
+    if (containsText(text, "位置") || containsText(text, "在哪") ||
+        containsText(text, "放在")) {
+        return "OBJECT_LOCATION";
+    }
+    if (containsText(text, "偏好") || containsText(text, "习惯") ||
+        containsText(text, "喜欢") || containsText(text, "温度") ||
+        containsText(subject, "温度")) {
+        return "USER_PREFERENCE";
+    }
+    return "";
+}
+
+MemoryDeleteRequest inferMemoryDeleteRequest(const std::string& text) {
+    MemoryDeleteRequest request;
+    request.delete_all = (containsText(text, "全部") || containsText(text, "所有") ||
+                          containsText(text, "清空")) &&
+                         containsText(text, "记忆");
+    if (!request.delete_all) {
+        request.subject = inferMemoryDeleteSubject(text);
+        request.category = inferMemoryDeleteCategory(text, request.subject);
+    }
+    return request;
+}
+
 }  // namespace
 
 AssistantService::AssistantService(const std::string& memory_path,
@@ -190,13 +364,43 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     IntentResult intent = analyzed_intent;
     ServiceResult result;
     result.task_type = intent.intent;
+    const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
+
+    if (looksLikeDeviceControlText(user_input) && inferred_command) {
+        intent.intent = IntentType::DeviceControl;
+        intent.device_command = intent.device_command
+                                    ? applyDeterministicDeviceSlots(*intent.device_command, inferred_command)
+                                    : *inferred_command;
+        result.task_type = IntentType::DeviceControl;
+        std::cout << "[IntentCorrection] forced_device_control" << std::endl;
+    } else if (looksLikeMemoryDeleteText(user_input)) {
+        intent.intent = IntentType::MemoryDelete;
+        if (!intent.memory_delete) {
+            intent.memory_delete = inferMemoryDeleteRequest(user_input);
+        }
+        intent.memory.reset();
+        result.task_type = IntentType::MemoryDelete;
+        std::cout << "[IntentCorrection] forced_memory_delete" << std::endl;
+    } else if (intent.intent == IntentType::DeviceControl && intent.device_command) {
+        intent.device_command = applyDeterministicDeviceSlots(*intent.device_command, inferred_command);
+    }
 
     std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
 
     if (pending_device_command_) {
+        if (isCancelText(user_input)) {
+            pending_device_command_.reset();
+            pending_device_turns_remaining_ = 0;
+            result.task_type = IntentType::Clarify;
+            result.call_llm = false;
+            result.fixed_reply = "好的，已取消。";
+            std::cout << "[PendingDeviceCommand] canceled" << std::endl;
+            return result;
+        }
+
         std::optional<DeviceCommand> supplement = intent.device_command;
         if (!supplement || !hasAnyDeviceSlot(*supplement)) {
-            supplement = inferDeviceSlotsFromText(user_input);
+            supplement = inferred_command;
         }
 
         if (supplement && hasAnyDeviceSlot(*supplement)) {
@@ -258,9 +462,11 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             auto resolved = device_registry_.resolve(*intent.device_command);
             std::string error;
             if (!resolved || !device_validator_.validate(*resolved, &error)) {
-                result.task_type = IntentType::Clarify;
+                result.task_type = IntentType::DeviceControl;
                 result.call_llm = false;
-                result.fixed_reply = defaultClarification();
+                result.fixed_reply = resolved
+                                         ? makeInvalidDeviceCommandReply(*resolved, error)
+                                         : makeUnsupportedDeviceReply(*intent.device_command);
                 std::cout << "[DeviceCommandInvalid] error="
                           << (resolved ? error : "device_not_found") << std::endl;
                 break;
@@ -352,6 +558,32 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             }
             std::cout << "[InjectedContext]" << std::endl
                       << result.runtime_context;
+            break;
+        }
+
+        case IntentType::MemoryDelete: {
+            if (!intent.memory_delete) {
+                result.call_llm = false;
+                result.fixed_reply = "请说明要删除哪条记忆。";
+                break;
+            }
+
+            const MemoryDeleteRequest request = *intent.memory_delete;
+            if (!request.delete_all && request.subject.empty() && request.category.empty()) {
+                result.call_llm = false;
+                result.fixed_reply = "请说明要删除哪条记忆。";
+                break;
+            }
+
+            const std::size_t removed = memory_store_.removeMatching(request);
+            if (!memory_store_.save()) {
+                std::cerr << kLogPrefix << " memory_save=FAIL" << std::endl;
+            }
+            result.call_llm = false;
+            result.deleted_memory = request;
+            result.fixed_reply = removed > 0 ? "好的，已删除相关记忆。" : "没有找到需要删除的记忆。";
+            std::cout << "[MemoryDelete] removed=" << removed << std::endl;
+            printSnapshot(memory_store_.snapshot());
             break;
         }
 

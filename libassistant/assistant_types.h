@@ -14,6 +14,7 @@ enum class IntentType {
     DeviceFault,
     MemoryWrite,
     MemoryQuery,
+    MemoryDelete,
     Clarify
 };
 
@@ -56,12 +57,19 @@ struct MemoryQuery {
     std::string attribute;
 };
 
+struct MemoryDeleteRequest {
+    std::string category;
+    std::string subject;
+    bool delete_all{false};
+};
+
 struct IntentResult {
     IntentType intent{IntentType::Clarify};
     std::optional<DeviceCommand> device_command;
     std::optional<DeviceEvent> device_event;
     std::optional<MemoryItem> memory;
     std::optional<MemoryQuery> memory_query;
+    std::optional<MemoryDeleteRequest> memory_delete;
     std::vector<std::string> missing_slots;
     std::string clarification_question;
     std::string raw_json;
@@ -84,6 +92,7 @@ struct ServiceResult {
     std::optional<ResolvedDeviceCommand> device_command;
     std::optional<DeviceEvent> device_event;
     std::optional<MemoryItem> stored_memory;
+    std::optional<MemoryDeleteRequest> deleted_memory;
 };
 
 const char* toString(IntentType type);

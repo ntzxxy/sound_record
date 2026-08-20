@@ -173,6 +173,31 @@ void MemoryStore::upsert(const MemoryItem& item) {
     }
 }
 
+std::size_t MemoryStore::removeMatching(const MemoryDeleteRequest& request) {
+    if (request.delete_all) return clear();
+    if (request.subject.empty() && request.category.empty()) return 0;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto old_size = items_.size();
+    items_.erase(std::remove_if(items_.begin(), items_.end(),
+        [&request](const MemoryItem& item) {
+            if (!request.category.empty() && item.category != request.category) return false;
+            if (request.subject.empty()) return true;
+            return item.subject == request.subject ||
+                   item.subject.find(request.subject) != std::string::npos ||
+                   request.subject.find(item.subject) != std::string::npos;
+        }),
+        items_.end());
+    return old_size - items_.size();
+}
+
+std::size_t MemoryStore::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto old_size = items_.size();
+    items_.clear();
+    return old_size;
+}
+
 std::vector<MemoryItem> MemoryStore::selectRelevant(const MemoryQuery& query,
                                                     std::size_t max_items) const {
     std::lock_guard<std::mutex> lock(mutex_);
