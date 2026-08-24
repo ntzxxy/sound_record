@@ -14,16 +14,24 @@ target_include_directories(out PRIVATE
 # 4. 链接库
 target_link_libraries(out PRIVATE audio_lib net_lib asound pthread)
 
-# 5. 编译成功后自动同步/复制脚本到 bin 目录
-add_custom_command(TARGET out POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+# 5. 运行脚本和声卡配置属于 runtime 文件。独立成 ALL target，避免只有 out 重新链接时才同步。
+set(BOARD_RUNTIME_FILES
         ${PROJECT_SOURCE_DIR}/mic_in_config.sh
         ${PROJECT_SOURCE_DIR}/mic_in_config_usb.sh
         ${PROJECT_SOURCE_DIR}/run.sh
-        $<TARGET_FILE_DIR:out>
-        COMMAND chmod +x $<TARGET_FILE_DIR:out>/run.sh $<TARGET_FILE_DIR:out>/mic_in_config.sh $<TARGET_FILE_DIR:out>/mic_in_config_usb.sh
-        COMMENT "正在把运行脚本复制到 bin 目录并赋予权限..."
 )
+
+add_custom_target(sync_runtime_files ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PROJECT_BINARY_DIR}/bin
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${BOARD_RUNTIME_FILES}
+        ${PROJECT_BINARY_DIR}/bin
+        COMMAND chmod +x ${PROJECT_BINARY_DIR}/bin/run.sh ${PROJECT_BINARY_DIR}/bin/mic_in_config.sh ${PROJECT_BINARY_DIR}/bin/mic_in_config_usb.sh
+        DEPENDS ${BOARD_RUNTIME_FILES}
+        COMMENT "同步板端运行脚本到 bin 目录..."
+)
+
+add_dependencies(out sync_runtime_files)
 
 # 6. 手动触发一键部署到板子 (cmake --build . --target deploy)
 add_custom_target(deploy

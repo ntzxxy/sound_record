@@ -60,6 +60,38 @@ static void internal_cb(const char* text, int is_final) {
     if (g_user_cb) g_user_cb(text, is_final);
 }
 
+static std::string build_history_prompt(size_t begin) {
+    std::string rebuilt;
+    rebuilt += "<|im_start|>system\n";
+    rebuilt += g_system_prompt;
+    rebuilt += "<|im_end|>\n";
+
+    for (size_t i = begin; i < g_history.size(); i++) {
+        rebuilt += "<|im_start|>user\n";
+        rebuilt += g_history[i].first;
+        rebuilt += "<|im_end|>\n<|im_start|>assistant\n";
+        rebuilt += g_history[i].second;
+        rebuilt += "<|im_end|>\n";
+    }
+    return rebuilt;
+}
+
+static bool rebuild_kv_cache_from_history(size_t keep_from, const char* reason) {
+    std::string rebuilt = build_history_prompt(keep_from);
+    if (keep_from > 0) {
+        g_history.erase(g_history.begin(), g_history.begin() + keep_from);
+    }
+
+    llm_reset_context();
+    int append_ret = llm_append_text(rebuilt.c_str());
+    fprintf(stderr, "[Agent] 上下文重建(%s): %d chars → append %s, 历史剩余 %d 对\n",
+            reason ? reason : "normal",
+            (int)rebuilt.size(), append_ret == 0 ? "OK" : "FAIL",
+            (int)g_history.size());
+    g_first_turn = false;
+    return append_ret == 0;
+}
+
 // ===================================================================
 // 对外接口
 // ===================================================================
@@ -93,50 +125,36 @@ void agent_reset(void) {
     g_history.clear();
 }
 
-int agent_chat(const char *raw_user_message, agent_callback_t callback) {
+int agent_chat_with_context(const char *raw_user_message,
+                            const char *runtime_context,
+                            agent_callback_t callback) {
     // 1. 输入清洗（去语气词）
     std::string cleaned = cleanup_input(raw_user_message ? raw_user_message : "");
+    const bool has_runtime_context = runtime_context && runtime_context[0];
+    std::string model_user_message = cleaned;
+    if (has_runtime_context) {
+        model_user_message =
+            std::string(runtime_context) +
+            "\n【当前用户输入】\n" + cleaned;
+    }
 
     // 2. 滑动窗口：满时重建上下文（清除 KV Cache → 重喂最近历史）
     if ((int)g_history.size() >= MAX_HISTORY_PAIRS) {
         fprintf(stderr, "[Agent] 窗口满(%d对)，重建上下文\n", MAX_HISTORY_PAIRS);
         size_t keep_from = g_history.size() > 2 ? g_history.size() - 2 : 0;
-
-        // 构建 ChatML 格式的历史对话字符串
-        // <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>\n...
-        std::string rebuilt;
-        rebuilt += "<|im_start|>system\n";
-        rebuilt += g_system_prompt;
-        rebuilt += "<|im_end|>\n";
-
-        for (size_t i = keep_from; i < g_history.size(); i++) {
-            rebuilt += "<|im_start|>user\n";
-            rebuilt += g_history[i].first;
-            rebuilt += "<|im_end|>\n<|im_start|>assistant\n";
-            rebuilt += g_history[i].second;
-            rebuilt += "<|im_end|>\n";
-        }
-
-        g_history.erase(g_history.begin(), g_history.begin() + keep_from);
-
         // 清空 KV Cache → 把重建的历史重新喂入模型
-        llm_reset_context();
-        int append_ret = llm_append_text(rebuilt.c_str());
-        fprintf(stderr, "[Agent] 上下文重建: %d chars → append %s, 历史剩余 %d 对\n",
-                (int)rebuilt.size(), append_ret == 0 ? "OK" : "FAIL",
-                (int)g_history.size());
-        g_first_turn = false;  // 历史已加载，下轮不重新加 system prompt
+        rebuild_kv_cache_from_history(keep_from, "window");
     }
 
     // 3. 格式化 prompt
-    char buf[4096];
+    char buf[8192];
     int len;
     if (g_first_turn) {
-        len = llm_format_prompt(g_system_prompt.c_str(), cleaned.c_str(),
+        len = llm_format_prompt(g_system_prompt.c_str(), model_user_message.c_str(),
                                 buf, sizeof(buf));
         g_first_turn = false;
     } else {
-        len = llm_format_prompt(nullptr, cleaned.c_str(), buf, sizeof(buf));
+        len = llm_format_prompt(nullptr, model_user_message.c_str(), buf, sizeof(buf));
     }
     if (len < 0 || len >= (int)sizeof(buf)) return -1;
 
@@ -166,5 +184,12 @@ int agent_chat(const char *raw_user_message, agent_callback_t callback) {
 
     // 7. 记录历史
     g_history.push_back({cleaned, g_captured});
+    if (has_runtime_context) {
+        rebuild_kv_cache_from_history(0, "runtime_context_cleanup");
+    }
     return 0;
+}
+
+int agent_chat(const char *raw_user_message, agent_callback_t callback) {
+    return agent_chat_with_context(raw_user_message, nullptr, callback);
 }

@@ -20,7 +20,11 @@ int main(int argc, char *argv[]) {
     if (tts_init(model_dir) != 0) return 1;
     fprintf(stderr, "[test] sample_rate=%d\n", tts_sample_rate());
 
-    tts_speak(text, test_callback);
+    if (tts_speak(text, test_callback) != 0 || g_test_audio.empty()) {
+        fprintf(stderr, "[test] synthesis failed or produced no audio\n");
+        tts_destroy();
+        return 2;
+    }
 
     int sr = tts_sample_rate();
     int data_bytes = g_test_audio.size() * sizeof(int16_t);

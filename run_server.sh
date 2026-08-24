@@ -4,11 +4,18 @@
 
 PORT=${1:-8080}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/cmake-build-wsl-local"
+BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/cmake-build-wsl-local}"
 MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16"
 LLM_MODEL="${SCRIPT_DIR}/models/qwen2.5-3b-instruct-q4_k_m.gguf"
-TTS_MODEL="${SCRIPT_DIR}/models/vits-tts-zh"
+TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/vits-tts-zh}"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
+
+if [ ! -x "${BUILD_DIR}/bin/stream_receiver" ]; then
+    echo "[Error] stream_receiver not found or not executable: ${BUILD_DIR}/bin/stream_receiver"
+    echo "        Build it first, for example:"
+    echo "        cmake --build ${BUILD_DIR} --target stream_receiver -j1"
+    exit 1
+fi
 
 cd "${BUILD_DIR}"
 mkdir -p "${SAVE_DIR}"
@@ -20,13 +27,18 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/_deps/onnxruntime-src/lib:${LD_LIBRARY_PATH
 # 关闭 llama.cpp CUDA graph 调试输出
 export GGML_CUDA_GRAPH=0
 
+# TTS 是当前主要瓶颈；默认给 ONNX Runtime 多线程，仍可用环境变量覆盖。
+export TTS_NUM_THREADS="${TTS_NUM_THREADS:-4}"
+
 echo "========================================="
 echo "  ASR + LLM + TTS 流式语音对话服务"
 echo "  端口: ${PORT}"
 echo "  ASR模型: ${MODEL_DIR}"
 echo "  LLM模型: ${LLM_MODEL}"
 echo "  TTS模型: ${TTS_MODEL}"
+echo "  TTS线程: ${TTS_NUM_THREADS}"
 echo "  录音: ${SAVE_DIR}"
+echo "  构建目录: ${BUILD_DIR}"
 echo "========================================="
 
 ./bin/stream_receiver "${PORT}" "${SAVE_DIR}" "${MODEL_DIR}" "${LLM_MODEL}" "${TTS_MODEL}"

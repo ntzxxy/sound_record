@@ -12,9 +12,11 @@
 static std::unique_ptr<sherpa_onnx::OfflineTts> g_tts;
 static int32_t g_sample_rate = 0;
 static thread_local tts_callback_t g_user_callback = nullptr;
+static thread_local bool g_had_audio = false;
 
 static int32_t bridge_callback(const float *samples, int32_t n, float progress) {
     if (!g_user_callback || !samples || n <= 0) return 1;
+    g_had_audio = true;
     std::vector<int16_t> pcm(n);
     for (int32_t i = 0; i < n; i++) {
         float s = samples[i];
@@ -35,7 +37,14 @@ static bool file_exists(const std::string& path) {
 int tts_init(const char *model_dir) {
     std::string base = model_dir;
     sherpa_onnx::OfflineTtsConfig config;
-    config.model.num_threads = 1;
+    int num_threads = 1;
+    const char *threads_env = std::getenv("TTS_NUM_THREADS");
+    if (threads_env && threads_env[0]) {
+        int parsed = std::atoi(threads_env);
+        if (parsed > 0) num_threads = parsed;
+    }
+    if (num_threads > 8) num_threads = 8;
+    config.model.num_threads = num_threads;
     config.model.provider    = "cpu";
     config.max_num_sentences = 1;  // 按句/chunk 回调，便于边合成边播放
 
@@ -81,7 +90,8 @@ int tts_init(const char *model_dir) {
     try {
         g_tts = std::make_unique<sherpa_onnx::OfflineTts>(config);
         g_sample_rate = g_tts->SampleRate();
-        fprintf(stderr, "[TTS] 模型加载成功, sample_rate=%d\n", g_sample_rate);
+        fprintf(stderr, "[TTS] 模型加载成功, sample_rate=%d, threads=%d\n",
+                g_sample_rate, num_threads);
         return 0;
     } catch (const std::exception &e) {
         fprintf(stderr, "[TTS] 模型加载失败: %s\n", e.what());
@@ -92,6 +102,7 @@ int tts_init(const char *model_dir) {
 int tts_speak(const char *text, tts_callback_t callback) {
     if (!g_tts || !text || !text[0] || !callback) return -1;
     g_user_callback = callback;
+    g_had_audio = false;
     try {
         sherpa_onnx::GenerationConfig gen_cfg;
         gen_cfg.extra["lang"] = "zh";
@@ -102,7 +113,7 @@ int tts_speak(const char *text, tts_callback_t callback) {
         return -1;
     }
     g_user_callback = nullptr;
-    return 0;
+    return g_had_audio ? 0 : -1;
 }
 
 int tts_sample_rate(void) { return g_sample_rate; }

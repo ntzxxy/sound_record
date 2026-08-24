@@ -2,6 +2,7 @@ build/
 build-pc/
 server/received_audio/
 docs/
+PPT/
 *.docx
 *.gguf
 *.wav
@@ -11,3 +12,7 @@ cmake-build-*/
 *.swp
 *.swo
 *~
+
+# Codex task files
+.codex-tasks/
+* TO DO list.csv
