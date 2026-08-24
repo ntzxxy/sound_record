@@ -6,14 +6,13 @@
 #include "net.h"
 #include "asr.h"
 #include "chat_agent.h"
-#include "assistant_service.h"
+#include "conversation_runtime.h"
+#include "control_gateway.h"
 #include "tts_pipeline.h"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <iostream>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 #include <fstream>
@@ -150,21 +149,6 @@ static ssize_t read_all(int fd, uint8_t* buf, size_t size) {
     return bytes_read;
 }
 
-// ===================================================================
-// LLM 异步推理线程
-// ===================================================================
-struct ChatTask {
-    std::string text;
-    bool is_reset;
-    uint64_t turn_id;
-    long long submit_ms;
-};
-
-static std::queue<ChatTask>    g_task_queue;
-static std::mutex              g_queue_mutex;
-static std::condition_variable g_queue_cv;
-static std::atomic<bool>       g_llm_running{true};
-static std::thread             g_llm_thread;
 static std::atomic<bool>       g_tts_enabled{false};
 static std::mutex              g_client_send_mutex;
 static std::atomic<int>        g_client_fd{-1};
@@ -182,6 +166,8 @@ static std::atomic<long long>  g_metric_tts_first_segment_ms{0};
 static std::atomic<bool>       g_metric_llm_first_token_seen{false};
 static std::atomic<bool>       g_metric_tts_first_segment_seen{false};
 static std::atomic<bool>       g_metric_first_audio_seen{false};
+static std::string             g_tts_pending;
+static bool                    g_reply_open{false};
 
 static long long metric_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -399,12 +385,6 @@ static void flush_tts_segments(std::string& pending, bool final) {
     }
 }
 
-static void push_natural_reply_to_tts(const std::string& reply) {
-    if (reply.empty()) return;
-    std::string pending = reply;
-    flush_tts_segments(pending, true);
-}
-
 static void append_asr_segment(std::string& full_text,
                                std::string& last_segment,
                                const std::string& segment) {
@@ -418,71 +398,59 @@ static void append_asr_segment(std::string& full_text,
     last_segment = segment;
 }
 
-static void llm_worker(assistant::AssistantService* assistant_service) {
-    while (g_llm_running) {
-        ChatTask task;
-        {
-            std::unique_lock<std::mutex> lock(g_queue_mutex);
-            g_queue_cv.wait(lock, [] { return !g_task_queue.empty() || !g_llm_running; });
-            if (!g_llm_running && g_task_queue.empty()) break;
-            task = std::move(g_task_queue.front());
-            g_task_queue.pop();
-        }
-        if (task.is_reset) { agent_reset(); continue; }
+static void handle_conversation_event(const conversation::ConversationEvent& event,
+                                      server::LocalControlGateway* control_gateway) {
+    if (control_gateway) control_gateway->broadcast(event);
 
-        // LLM 回调：打印 + 智能分块推送到 TTS 管线
-        long long worker_begin_ms = metric_now_ms();
-        if (task.turn_id == g_turn_id.load()) {
-            g_metric_llm_submit_ms = task.submit_ms;
-            std::cout << "[METRIC] llm_queue turn=" << task.turn_id
-                      << " wait_ms=" << (worker_begin_ms - task.submit_ms)
-                      << " text_chars=" << utf8_count_chars(task.text, task.text.size()) << std::endl;
-        }
-        static std::string g_full;
-        static std::string g_tts_pending;
-        g_full.clear();
-        g_tts_pending.clear();
+    switch (event.type) {
+        case conversation::EventType::ModeChanged:
+            std::cout << "[Conversation] mode=" << event.mode << std::endl;
+            break;
 
-        assistant::ServiceResult service_result;
-        if (assistant_service) {
-            service_result = assistant_service->process(task.text);
-        } else {
-            service_result.call_llm = true;
-        }
+        case conversation::EventType::UserMessage:
+            g_tts_pending.clear();
+            g_reply_open = false;
+            std::cout << "[Conversation] source=" << conversation::toString(event.source)
+                      << " request_id=" << event.request_id << std::endl;
+            break;
 
-        if (!service_result.call_llm) {
-            if (!service_result.fixed_reply.empty()) {
-                std::cout << "[Agent] " << std::flush;
-                std::cout << service_result.fixed_reply << std::endl;
-                push_natural_reply_to_tts(service_result.fixed_reply);
+        case conversation::EventType::IntentResult:
+            std::cout << "[TaskClass] " << event.intent << std::endl;
+            break;
+
+        case conversation::EventType::ReplyDelta: {
+            const long long now = metric_now_ms();
+            if (!g_metric_llm_first_token_seen.exchange(true)) {
+                const long long submit_ms = g_metric_llm_submit_ms.load();
+                const long long asr_final_ms = g_metric_asr_final_ms.load();
+                std::cout << "[METRIC] llm_first_token turn=" << event.turn_id
+                          << " llm_submit_to_first_token_ms="
+                          << (submit_ms > 0 ? now - submit_ms : -1)
+                          << " asr_final_to_first_token_ms="
+                          << (asr_final_ms > 0 ? now - asr_final_ms : -1)
+                          << std::endl;
             }
-            continue;
-        }
-
-        std::cout << "[Agent] " << std::flush;
-        agent_chat_with_context(task.text.c_str(),
-                                service_result.runtime_context.c_str(),
-                                [](const char *text, int is_final) {
-            if (text && text[0]) {
-                long long now = metric_now_ms();
-                if (!g_metric_llm_first_token_seen.exchange(true)) {
-                    long long submit_ms = g_metric_llm_submit_ms.load();
-                    long long asr_final_ms = g_metric_asr_final_ms.load();
-                    std::cout << "[METRIC] llm_first_token turn=" << g_turn_id.load()
-                              << " llm_submit_to_first_token_ms=" << (submit_ms > 0 ? now - submit_ms : -1)
-                              << " asr_final_to_first_token_ms=" << (asr_final_ms > 0 ? now - asr_final_ms : -1)
-                              << std::endl;
-                }
-                std::cout << text << std::flush;
-                g_full += text;
-                g_tts_pending += text;
+            if (!g_reply_open) {
+                std::cout << "[Agent] " << std::flush;
+                g_reply_open = true;
+            }
+            std::cout << event.text << std::flush;
+            if (event.enable_tts) {
+                g_tts_pending += event.text;
                 flush_tts_segments(g_tts_pending, false);
             }
-            if (is_final) {
-                std::cout << std::endl;
-                flush_tts_segments(g_tts_pending, true);
-            }
-        });
+            break;
+        }
+
+        case conversation::EventType::ReplyFinal:
+            if (g_reply_open) std::cout << std::endl;
+            g_reply_open = false;
+            if (event.enable_tts) flush_tts_segments(g_tts_pending, true);
+            break;
+
+        case conversation::EventType::Error:
+            std::cerr << "[Conversation] " << event.text << std::endl;
+            break;
     }
 }
 
@@ -519,21 +487,32 @@ int start_stream_server(int port, const std::string& save_dir,
     }
     std::cout << "[ASR] 模型加载成功" << std::endl;
 
-    std::unique_ptr<assistant::AssistantService> assistant_service;
+    std::unique_ptr<conversation::ConversationRuntime> conversation_runtime;
+    std::unique_ptr<server::LocalControlGateway> control_gateway;
     if (!llm_model_path.empty()) {
         if (agent_init(llm_model_path.c_str(), nullptr) != 0) {
             std::cerr << "[Agent] 模型加载失败: " << llm_model_path << std::endl;
             asr_destroy(); return -1;
         }
-        assistant_service = std::make_unique<assistant::AssistantService>("./runtime/assistant_memory_v2.tsv");
-        if (!assistant_service->initialize()) {
+        conversation_runtime = std::make_unique<conversation::ConversationRuntime>(
+            "./runtime/assistant_memory_v2.tsv");
+        if (!conversation_runtime->initialize()) {
             std::cerr << "[AssistantContext] 初始化失败" << std::endl;
             agent_destroy();
             asr_destroy();
             return -1;
         }
-        g_llm_thread = std::thread(llm_worker, assistant_service.get());
-        std::cout << "[Agent] 模型加载成功, LLM线程已启动" << std::endl;
+        control_gateway = std::make_unique<server::LocalControlGateway>(
+            *conversation_runtime, 8081);
+        conversation_runtime->setEventCallback(
+            [&control_gateway](const conversation::ConversationEvent& event) {
+                handle_conversation_event(event, control_gateway.get());
+            });
+        conversation_runtime->start();
+        if (!control_gateway->start()) {
+            std::cerr << "[ControlGateway] 启动失败，Qt 文字输入不可用" << std::endl;
+        }
+        std::cout << "[Agent] 模型加载成功, 会话运行时已启动" << std::endl;
     }
 
     if (!tts_model_path.empty()) {
@@ -556,6 +535,7 @@ int start_stream_server(int port, const std::string& save_dir,
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         g_client_fd = client_fd;
         std::cout << "[+] 开发板按键按下，长连接流通道已建立。" << std::endl;
+        if (control_gateway) control_gateway->broadcastStatus("connected", "board connected");
 
         SessionRecorder recorder;
         recorder.open(save_dir);
@@ -620,6 +600,11 @@ int start_stream_server(int port, const std::string& save_dir,
                               << " busy=0 interrupt_ms=" << (metric_now_ms() - cancel_begin_ms) << std::endl;
                 }
                 uint64_t new_turn = g_turn_id.fetch_add(1) + 1;
+                if (control_gateway) {
+                    control_gateway->broadcast({conversation::EventType::ModeChanged,
+                                                conversation::InputSource::Voice,
+                                                new_turn, "", "", "voice", "", true, false});
+                }
                 metric_reset_turn();
                 g_metric_mic_start_ms = metric_now_ms();
                 turn_pcm_bytes = 0;
@@ -656,13 +641,16 @@ int start_stream_server(int port, const std::string& save_dir,
                     metric_mark_asr_final(turn_text);
                     if (!tts_model_path.empty() && tts_pipeline_is_busy()) {
                         std::cout << "[TTS] 播放中，忽略此句" << std::endl;
-                    } else if (!llm_model_path.empty()) {
+                    } else if (conversation_runtime) {
                         long long submit_ms = metric_now_ms();
                         g_metric_llm_submit_ms = submit_ms;
-                        { std::lock_guard<std::mutex> lk(g_queue_mutex);
-                          g_task_queue.push({turn_text, false, g_turn_id.load(), submit_ms}); }
-                        g_queue_cv.notify_one();
-                        utterance_submitted = true;
+                        conversation::ConversationRequest request;
+                        request.text = turn_text;
+                        request.source = conversation::InputSource::Voice;
+                        request.turn_id = g_turn_id.load();
+                        request.submitted_at_ms = submit_ms;
+                        request.enable_tts = true;
+                        utterance_submitted = conversation_runtime->submit(std::move(request)) != 0;
                     }
                 }
                 recorder.end_segment();
@@ -742,13 +730,16 @@ int start_stream_server(int port, const std::string& save_dir,
                         if (!tts_model_path.empty() && (tts_pipeline_is_busy() || in_cooldown)) {
                             if (in_cooldown) std::cout << "[TTS] 冷却期，忽略此句" << std::endl;
                             else            std::cout << "[TTS] 播放中，忽略此句" << std::endl;
-                        } else if (!llm_model_path.empty()) {
+                        } else if (conversation_runtime) {
                             long long submit_ms = metric_now_ms();
                             g_metric_llm_submit_ms = submit_ms;
-                            { std::lock_guard<std::mutex> lk(g_queue_mutex);
-                              g_task_queue.push({last_text, false, g_turn_id.load(), submit_ms}); }
-                            g_queue_cv.notify_one();
-                            utterance_submitted = true;
+                            conversation::ConversationRequest request;
+                            request.text = last_text;
+                            request.source = conversation::InputSource::Voice;
+                            request.turn_id = g_turn_id.load();
+                            request.submitted_at_ms = submit_ms;
+                            request.enable_tts = true;
+                            utterance_submitted = conversation_runtime->submit(std::move(request)) != 0;
                         }
                     }
                     asr_reset();
@@ -770,20 +761,16 @@ int start_stream_server(int port, const std::string& save_dir,
                   << " duration_ms=" << stream_duration_ms
                   << " avg_frame_interval_ms=" << avg_frame_interval_ms << std::endl;
         std::cout << "[-] 开发板连接断开。" << std::endl;
+        if (control_gateway) control_gateway->broadcastStatus("disconnected", "board disconnected");
         asr_reset();
 
-        if (!llm_model_path.empty()) {
-            { std::lock_guard<std::mutex> lk(g_queue_mutex);
-              while (!g_task_queue.empty()) g_task_queue.pop();
-              g_task_queue.push({"", true, g_turn_id.load(), metric_now_ms()}); }
-            g_queue_cv.notify_one();
-        }
+        if (conversation_runtime) conversation_runtime->resetConversation();
     }
 
     asr_destroy();
-    if (!llm_model_path.empty()) {
-        g_llm_running = false; g_queue_cv.notify_one();
-        if (g_llm_thread.joinable()) g_llm_thread.join();
+    if (conversation_runtime) {
+        if (control_gateway) control_gateway->stop();
+        conversation_runtime->stop();
         agent_destroy();
     }
     if (!tts_model_path.empty()) {

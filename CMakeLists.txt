@@ -16,11 +16,17 @@ else()
     message(STATUS ">>>> 传统本地文件保存模式 (STREAMING_MODE = OFF) <<<<")
 endif()
 
-# 添加子目录，CMake 会按顺序进入这两个目录执行里面的 CMakeLists.txt
-add_subdirectory(libaudio)
-add_subdirectory(libnet)
+# 开发板客户端依赖 ALSA、Linux Socket 等系统接口。桌面 Qt 客户端在 Windows
+# 上构建时应关闭该选项，避免默认 all 目标误编译板端程序。
+option(BUILD_BOARD_CLIENT "Build the Linux development-board client" ON)
+if(BUILD_BOARD_CLIENT)
+    add_subdirectory(libaudio)
+    add_subdirectory(libnet)
+    add_subdirectory(src)
+endif()
+
 add_subdirectory(libassistant)
-add_subdirectory(src)
+add_subdirectory(libconversation)
 # ASR 引擎仅在 PC/Jetson（非 arm 交叉编译）时构建
 option(BUILD_ASR "Build sherpa-onnx ASR engine" ON)
 if(BUILD_ASR AND CMAKE_CROSSCOMPILING)
@@ -61,4 +67,9 @@ option(BUILD_ASSISTANT_TOOLS "Build assistant context demo and tests" ON)
 if(BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING)
     add_subdirectory(tools)
     add_subdirectory(tests)
+endif()
+
+option(BUILD_DESKTOP_CLIENT "Build the Qt desktop control client" OFF)
+if(BUILD_DESKTOP_CLIENT AND NOT CMAKE_CROSSCOMPILING)
+    add_subdirectory(desktop_client)
 endif()
