@@ -15,6 +15,7 @@ public:
 
     bool load();
     bool append(const DeviceEvent& event);
+    bool removeExact(const DeviceEvent& event);
     bool save() const;
     std::vector<DeviceEvent> snapshot() const;
 

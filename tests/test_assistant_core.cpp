@@ -460,6 +460,36 @@ int main() {
         CHECK(snapshot[0].event_type == "FAULT");
         CHECK(snapshot[0].description == "不制冷\t有异响\n需要检查");
         CHECK(snapshot[0].timestamp == 200);
+        CHECK(restored.removeExact(snapshot[0]));
+        CHECK(restored.save());
+        CHECK(restored.snapshot().empty());
+    }
+
+    resetTestFile();
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult fault;
+        fault.intent = IntentType::DeviceFault;
+        fault.device_event = makeEvent("卧室", "空调", "FAULT", "不制冷", 0);
+        ServiceResult stored_fault = service.processAnalyzed("卧室空调不制冷", fault);
+        CHECK(stored_fault.task_type == IntentType::DeviceFault);
+        CHECK(stored_fault.call_llm);
+
+        IntentResult preference;
+        preference.intent = IntentType::MemoryWrite;
+        preference.memory = makeItem("USER_PREFERENCE", "空调温度", "偏好", "26度", 0);
+        CHECK(service.processAnalyzed("记住我喜欢26度", preference).stored_memory);
+
+        ServiceResult fault_records = service.process("查询设备故障记录");
+        CHECK(fault_records.task_type == IntentType::RecordQuery);
+        CHECK(!fault_records.call_llm);
+        CHECK(fault_records.fixed_reply.find("卧室空调") != std::string::npos);
+
+        ServiceResult preference_records = service.process("我有哪些偏好");
+        CHECK(preference_records.task_type == IntentType::RecordQuery);
+        CHECK(!preference_records.call_llm);
+        CHECK(preference_records.fixed_reply.find("空调温度") != std::string::npos);
     }
 
     resetTestFile();
@@ -473,6 +503,9 @@ int main() {
         CHECK(snapshot.size() == 1);
         CHECK(countTriple(snapshot, "USER_PREFERENCE", "空调温度", "偏好") == 1);
         CHECK(snapshot[0].value == "25度");
+        CHECK(store.removeExact(snapshot[0]));
+        CHECK(store.save());
+        CHECK(store.snapshot().empty());
     }
 
     resetTestFile();

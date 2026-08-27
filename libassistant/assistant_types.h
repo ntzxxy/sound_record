@@ -15,6 +15,7 @@ enum class IntentType {
     MemoryWrite,
     MemoryQuery,
     MemoryDelete,
+    RecordQuery,
     Clarify
 };
 
@@ -63,6 +64,19 @@ struct MemoryDeleteRequest {
     bool delete_all{false};
 };
 
+// 记录中心的分类。设备故障是可重复发生的历史事件，不能与会覆盖更新的
+// 用户记忆混为同一条记录，因此仅在查询和界面展示时统一处理。
+enum class RecordType {
+    All,
+    DeviceFault,
+    UserPreference,
+    ObjectLocation
+};
+
+struct RecordQuery {
+    RecordType type{RecordType::All};
+};
+
 struct IntentResult {
     IntentType intent{IntentType::Clarify};
     std::optional<DeviceCommand> device_command;
@@ -70,6 +84,7 @@ struct IntentResult {
     std::optional<MemoryItem> memory;
     std::optional<MemoryQuery> memory_query;
     std::optional<MemoryDeleteRequest> memory_delete;
+    std::optional<RecordQuery> record_query;
     std::vector<std::string> missing_slots;
     std::string clarification_question;
     std::string raw_json;
@@ -97,6 +112,8 @@ struct ServiceResult {
 
 const char* toString(IntentType type);
 std::optional<IntentType> intentTypeFromString(const std::string& value);
+const char* toString(RecordType type);
+std::optional<RecordType> recordTypeFromString(const std::string& value);
 std::string formatDeviceCommand(const ResolvedDeviceCommand& command);
 std::string formatDeviceEvent(const DeviceEvent& event);
 std::string formatMemoryItem(const MemoryItem& item);

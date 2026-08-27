@@ -25,6 +25,8 @@ public:
                                   const IntentResult& analyzed_intent);
     std::vector<MemoryItem> memorySnapshot() const;
     std::vector<DeviceEvent> eventSnapshot() const;
+    bool deleteMemoryRecord(const MemoryItem& item);
+    bool deleteDeviceFaultRecord(const DeviceEvent& event);
 
 private:
     IntentPreprocessor intent_preprocessor_;

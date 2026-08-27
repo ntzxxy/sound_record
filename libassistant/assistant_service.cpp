@@ -1,5 +1,6 @@
 #include "assistant_service.h"
 
+#include <algorithm>
 #include <cctype>
 #include <ctime>
 #include <cstdlib>
@@ -254,6 +255,109 @@ std::string noMemoryContext() {
            "- 系统中没有找到与该问题相关的已存储信息。不得猜测或虚构。\n";
 }
 
+bool looksLikeListQuestion(const std::string& text) {
+    static const std::vector<std::string> query_words = {
+        "查询", "查看", "显示", "列出", "列表", "记录", "有哪些", "有哪", "多少", "什么"
+    };
+    for (const auto& word : query_words) {
+        if (containsText(text, word)) return true;
+    }
+    return false;
+}
+
+std::optional<RecordQuery> inferRecordQuery(const std::string& text) {
+    const bool is_list_question = looksLikeListQuestion(text);
+    const bool mentions_fault = containsText(text, "故障") || containsText(text, "异常") ||
+                                containsText(text, "坏了") || containsText(text, "不制冷");
+    if (mentions_fault && is_list_question) {
+        return RecordQuery{RecordType::DeviceFault};
+    }
+
+    const bool mentions_preference = containsText(text, "偏好") || containsText(text, "喜欢什么") ||
+                                     containsText(text, "习惯什么");
+    if (mentions_preference && is_list_question) {
+        return RecordQuery{RecordType::UserPreference};
+    }
+
+    const bool mentions_location = containsText(text, "物品位置") || containsText(text, "位置记录") ||
+                                   containsText(text, "哪些物品") || containsText(text, "物品有哪些");
+    if (mentions_location && is_list_question) {
+        return RecordQuery{RecordType::ObjectLocation};
+    }
+
+    const bool mentions_all_records = containsText(text, "记忆列表") || containsText(text, "所有记忆") ||
+                                      containsText(text, "全部记忆") || containsText(text, "记住了什么");
+    if (mentions_all_records) {
+        return RecordQuery{RecordType::All};
+    }
+    return std::nullopt;
+}
+
+std::string memoryCategoryName(RecordType type) {
+    switch (type) {
+        case RecordType::UserPreference: return "用户偏好";
+        case RecordType::ObjectLocation: return "物品位置";
+        default: return "系统记忆";
+    }
+}
+
+std::string makeRecordListReply(RecordType type,
+                                std::vector<MemoryItem> memories,
+                                std::vector<DeviceEvent> events) {
+    constexpr std::size_t kMaxShownItems = 5;
+    std::sort(memories.begin(), memories.end(), [](const MemoryItem& a, const MemoryItem& b) {
+        return a.updated_at > b.updated_at;
+    });
+    std::sort(events.begin(), events.end(), [](const DeviceEvent& a, const DeviceEvent& b) {
+        return a.timestamp > b.timestamp;
+    });
+
+    auto make_memory_reply = [&](RecordType category) {
+        std::vector<MemoryItem> selected;
+        for (const auto& item : memories) {
+            if ((category == RecordType::UserPreference && item.category == "USER_PREFERENCE") ||
+                (category == RecordType::ObjectLocation && item.category == "OBJECT_LOCATION")) {
+                selected.push_back(item);
+            }
+        }
+        const std::string name = memoryCategoryName(category);
+        if (selected.empty()) return "目前没有已保存的" + name + "。";
+
+        std::string reply = "目前有" + std::to_string(selected.size()) + "条" + name + "：";
+        for (std::size_t i = 0; i < selected.size() && i < kMaxShownItems; ++i) {
+            const auto& item = selected[i];
+            reply += std::to_string(i + 1) + "." + item.subject + "：" + item.value + "；";
+        }
+        if (selected.size() > kMaxShownItems) reply += "其余请在记录中心查看。";
+        return reply;
+    };
+
+    if (type == RecordType::DeviceFault) {
+        if (events.empty()) return "目前没有已记录的设备故障。";
+        std::string reply = "目前有" + std::to_string(events.size()) + "条设备故障记录：";
+        for (std::size_t i = 0; i < events.size() && i < kMaxShownItems; ++i) {
+            const auto& event = events[i];
+            reply += std::to_string(i + 1) + "." + event.room + event.device + "：" +
+                     event.description + "；";
+        }
+        if (events.size() > kMaxShownItems) reply += "其余请在记录中心查看。";
+        return reply;
+    }
+    if (type == RecordType::UserPreference || type == RecordType::ObjectLocation) {
+        return make_memory_reply(type);
+    }
+
+    std::size_t preference_count = 0;
+    std::size_t location_count = 0;
+    for (const auto& item : memories) {
+        if (item.category == "USER_PREFERENCE") ++preference_count;
+        if (item.category == "OBJECT_LOCATION") ++location_count;
+    }
+    return "当前共有" + std::to_string(events.size()) + "条设备故障、" +
+           std::to_string(preference_count) + "条用户偏好和" +
+           std::to_string(location_count) + "条物品位置记录，可在记录中心查看详情。";
+}
+
 std::string defaultEventLogPath(const std::string& memory_path) {
     const std::filesystem::path path(memory_path);
     const std::filesystem::path dir = path.parent_path();
@@ -355,6 +459,13 @@ bool AssistantService::initialize() {
 }
 
 ServiceResult AssistantService::process(const std::string& user_input) {
+    if (const auto record_query = inferRecordQuery(user_input)) {
+        IntentResult intent;
+        intent.intent = IntentType::RecordQuery;
+        intent.record_query = *record_query;
+        intent.json_valid = true;
+        return processAnalyzed(user_input, intent);
+    }
     IntentResult intent = intent_preprocessor_.analyze(user_input);
     return processAnalyzed(user_input, intent);
 }
@@ -587,6 +698,19 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             break;
         }
 
+        case IntentType::RecordQuery: {
+            if (!intent.record_query) {
+                result.call_llm = false;
+                result.fixed_reply = "请说明要查询设备故障、用户偏好还是物品位置。";
+                break;
+            }
+            result.call_llm = false;
+            result.fixed_reply = makeRecordListReply(intent.record_query->type,
+                                                     memory_store_.snapshot(),
+                                                     event_log_.snapshot());
+            break;
+        }
+
         case IntentType::Clarify: {
             if (intent.device_command && hasAnyDeviceSlot(*intent.device_command)) {
                 std::vector<std::string> missing = intent.missing_slots.empty()
@@ -622,6 +746,14 @@ std::vector<MemoryItem> AssistantService::memorySnapshot() const {
 
 std::vector<DeviceEvent> AssistantService::eventSnapshot() const {
     return event_log_.snapshot();
+}
+
+bool AssistantService::deleteMemoryRecord(const MemoryItem& item) {
+    return memory_store_.removeExact(item) && memory_store_.save();
+}
+
+bool AssistantService::deleteDeviceFaultRecord(const DeviceEvent& event) {
+    return event_log_.removeExact(event) && event_log_.save();
 }
 
 }  // namespace assistant

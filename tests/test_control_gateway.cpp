@@ -76,6 +76,22 @@ int main() {
     CHECK(response.find("\"source\":\"text\"") != std::string::npos);
     CHECK(response.find("\"type\":\"reply_final\"") != std::string::npos);
 
+    const char records_request[] =
+        "{\"type\":\"get_records\",\"record_type\":\"DEVICE_FAULT\"}\n";
+    CHECK(send(fd, records_request, sizeof(records_request) - 1, MSG_NOSIGNAL) ==
+          static_cast<ssize_t>(sizeof(records_request) - 1));
+    const std::string records_response = receiveUntil(fd, "\"type\":\"records\"");
+    CHECK(records_response.find("\"record_type\":\"DEVICE_FAULT\"") != std::string::npos);
+    CHECK(records_response.find("\"items\"") != std::string::npos);
+
+    const char delete_request[] =
+        "{\"type\":\"delete_record\",\"category\":\"USER_PREFERENCE\","
+        "\"subject\":\"missing\",\"attribute\":\"偏好\"}\n";
+    CHECK(send(fd, delete_request, sizeof(delete_request) - 1, MSG_NOSIGNAL) ==
+          static_cast<ssize_t>(sizeof(delete_request) - 1));
+    const std::string delete_response = receiveUntil(fd, "\"type\":\"record_deleted\"");
+    CHECK(delete_response.find("\"deleted\":false") != std::string::npos);
+
     close(fd);
     gateway.stop();
     runtime.stop();

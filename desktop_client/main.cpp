@@ -3,6 +3,7 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QDateTime>
+#include <QDialog>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -10,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -23,6 +25,7 @@
 #include <QTableWidget>
 #include <QTextCursor>
 #include <QTextEdit>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -74,6 +77,9 @@ private:
         title_layout->addWidget(title);
         title_layout->addWidget(subtitle);
         title_layout->addStretch();
+        records_button_ = new QPushButton(QStringLiteral("记录中心"), central);
+        records_button_->setEnabled(false);
+        title_layout->addWidget(records_button_);
         layout->addLayout(title_layout);
 
         auto* connection_box = new QGroupBox(QStringLiteral("控制服务连接"), central);
@@ -120,6 +126,8 @@ private:
         splitter->setStretchFactor(0, 3);
         splitter->setStretchFactor(1, 2);
         layout->addWidget(splitter, 1);
+
+        buildRecordDialog();
 
         setCentralWidget(central);
         statusBar()->showMessage(QStringLiteral("就绪"));
@@ -208,16 +216,145 @@ private:
         layout->addWidget(event_table_);
         return panel;
     }
+    QTableWidget* createRecordTable(const QStringList& headers) {
+        auto* table = new QTableWidget(0, headers.size(), record_dialog_);
+        table->setHorizontalHeaderLabels(headers);
+        table->verticalHeader()->setVisible(false);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setAlternatingRowColors(true);
+        table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        return table;
+    }
+
+    void buildRecordDialog() {
+        record_dialog_ = new QDialog(this);
+        record_dialog_->setWindowTitle(QStringLiteral("记录中心"));
+        record_dialog_->setModal(false);
+        record_dialog_->resize(760, 420);
+
+        auto* layout = new QVBoxLayout(record_dialog_);
+        auto* hint = new QLabel(QStringLiteral("设备故障仅保存历史反馈，不代表故障已处理或修复。"), record_dialog_);
+        hint->setStyleSheet(QStringLiteral("color: #64748B;"));
+        layout->addWidget(hint);
+
+        record_tabs_ = new QTabWidget(record_dialog_);
+        fault_table_ = createRecordTable(
+            {QStringLiteral("记录时间"), QStringLiteral("房间"), QStringLiteral("设备"), QStringLiteral("故障描述"), QStringLiteral("操作")});
+        preference_table_ = createRecordTable(
+            {QStringLiteral("更新时间"), QStringLiteral("对象"), QStringLiteral("属性"), QStringLiteral("偏好"), QStringLiteral("操作")});
+        location_table_ = createRecordTable(
+            {QStringLiteral("更新时间"), QStringLiteral("物品"), QStringLiteral("位置"), QStringLiteral("操作")});
+        record_tabs_->addTab(fault_table_, QStringLiteral("设备故障"));
+        record_tabs_->addTab(preference_table_, QStringLiteral("用户偏好"));
+        record_tabs_->addTab(location_table_, QStringLiteral("物品位置"));
+        layout->addWidget(record_tabs_, 1);
+
+        auto* actions = new QHBoxLayout();
+        record_summary_ = new QLabel(QStringLiteral("未加载"), record_dialog_);
+        records_refresh_button_ = new QPushButton(QStringLiteral("刷新"), record_dialog_);
+        actions->addWidget(record_summary_);
+        actions->addStretch();
+        actions->addWidget(records_refresh_button_);
+        layout->addLayout(actions);
+
+        connect(record_tabs_, &QTabWidget::currentChanged, this, [this](int) { requestCurrentRecords(); });
+        connect(records_refresh_button_, &QPushButton::clicked, this, [this] { requestCurrentRecords(); });
+    }
+
+    QString currentRecordType() const {
+        if (!record_tabs_ || record_tabs_->currentIndex() == 0) return QStringLiteral("DEVICE_FAULT");
+        if (record_tabs_->currentIndex() == 1) return QStringLiteral("USER_PREFERENCE");
+        return QStringLiteral("OBJECT_LOCATION");
+    }
+
+    void showRecordDialog() {
+        if (!record_dialog_) return;
+        record_dialog_->show();
+        record_dialog_->raise();
+        record_dialog_->activateWindow();
+        requestCurrentRecords();
+    }
+
+    void requestCurrentRecords() {
+        if (socket_.state() != QAbstractSocket::ConnectedState || !record_dialog_ ||
+            !record_dialog_->isVisible()) return;
+        record_summary_->setText(QStringLiteral("正在加载…"));
+        sendJson(QJsonObject{{QStringLiteral("type"), QStringLiteral("get_records")},
+                             {QStringLiteral("record_type"), currentRecordType()}});
+    }
+
+    QString displayRecordTime(const QJsonObject& item) const {
+        const qint64 seconds = static_cast<qint64>(item.value(QStringLiteral("timestamp")).toDouble());
+        return seconds > 0 ? QDateTime::fromSecsSinceEpoch(seconds).toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+                           : QStringLiteral("--");
+    }
+
+    void populateRecordTable(QTableWidget* table, const QJsonArray& items,
+                             const QStringList& fields) {
+        table->setRowCount(0);
+        for (const auto& value : items) {
+            const QJsonObject item = value.toObject();
+            const int row = table->rowCount();
+            table->insertRow(row);
+            table->setItem(row, 0, new QTableWidgetItem(displayRecordTime(item)));
+            for (int column = 0; column < fields.size(); ++column) {
+                table->setItem(row, column + 1,
+                               new QTableWidgetItem(item.value(fields[column]).toString()));
+            }
+            auto* delete_button = new QPushButton(QStringLiteral("删除"), table);
+            connect(delete_button, &QPushButton::clicked, this, [this, item, delete_button] {
+                delete_button->setEnabled(false);
+                requestDeleteRecord(item);
+            });
+            table->setCellWidget(row, fields.size() + 1, delete_button);
+        }
+    }
+
+    void requestDeleteRecord(const QJsonObject& item) {
+        if (socket_.state() != QAbstractSocket::ConnectedState) return;
+        const QString category = item.value(QStringLiteral("category")).toString();
+        QJsonObject request{{QStringLiteral("type"), QStringLiteral("delete_record")},
+                            {QStringLiteral("category"), category},
+                            {QStringLiteral("timestamp"), QString::number(static_cast<qint64>(item.value(QStringLiteral("timestamp")).toDouble()))},
+                            {QStringLiteral("subject"), item.value(QStringLiteral("subject")).toString()},
+                            {QStringLiteral("attribute"), item.value(QStringLiteral("attribute")).toString()},
+                            {QStringLiteral("room"), item.value(QStringLiteral("room")).toString()},
+                            {QStringLiteral("device"), item.value(QStringLiteral("device")).toString()},
+                            {QStringLiteral("event_type"), item.value(QStringLiteral("event_type")).toString()},
+                            {QStringLiteral("description"), item.value(QStringLiteral("description")).toString()}};
+        record_summary_->setText(QStringLiteral("正在删除…"));
+        sendJson(request);
+    }
+
+    void showRecords(const QJsonObject& message) {
+        const QString record_type = message.value(QStringLiteral("record_type")).toString();
+        const QJsonArray items = message.value(QStringLiteral("items")).toArray();
+        if (record_type == QStringLiteral("DEVICE_FAULT")) {
+            populateRecordTable(fault_table_, items,
+                                {QStringLiteral("room"), QStringLiteral("device"), QStringLiteral("description")});
+        } else if (record_type == QStringLiteral("USER_PREFERENCE")) {
+            populateRecordTable(preference_table_, items,
+                                {QStringLiteral("subject"), QStringLiteral("attribute"), QStringLiteral("value")});
+        } else if (record_type == QStringLiteral("OBJECT_LOCATION")) {
+            populateRecordTable(location_table_, items,
+                                {QStringLiteral("subject"), QStringLiteral("value")});
+        }
+        record_summary_->setText(QStringLiteral("共 %1 条").arg(items.size()));
+    }
+
 
     void wireSocket() {
         connect(connect_button_, &QPushButton::clicked, this, [this] { toggleConnection(); });
         connect(reset_button_, &QPushButton::clicked, this, [this] { resetConversation(); });
         connect(send_button_, &QPushButton::clicked, this, [this] { submitText(); });
+        connect(records_button_, &QPushButton::clicked, this, [this] { showRecordDialog(); });
         connect(input_, &QPlainTextEdit::textChanged, this, [this] { updateSendButton(); });
         connect(&socket_, &QTcpSocket::connected, this, [this] {
             service_value_->setText(QStringLiteral("已连接"));
             connect_button_->setText(QStringLiteral("断开服务"));
             reset_button_->setEnabled(true);
+            records_button_->setEnabled(true);
             host_edit_->setEnabled(false);
             port_spin_->setEnabled(false);
             updateSendButton();
@@ -228,6 +365,8 @@ private:
             service_value_->setText(QStringLiteral("未连接"));
             connect_button_->setText(QStringLiteral("连接服务"));
             reset_button_->setEnabled(false);
+            records_button_->setEnabled(false);
+            if (record_dialog_) record_dialog_->hide();
             host_edit_->setEnabled(true);
             port_spin_->setEnabled(true);
             reply_open_ = false;
@@ -323,6 +462,21 @@ private:
             return;
         }
 
+        if (type == QStringLiteral("records")) {
+            showRecords(message);
+            return;
+        }
+
+        if (type == QStringLiteral("record_deleted")) {
+            const bool deleted = message.value(QStringLiteral("deleted")).toBool();
+            appendLog(deleted ? QStringLiteral("信息") : QStringLiteral("警告"),
+                      QStringLiteral("记录中心"),
+                      deleted ? QStringLiteral("记录已删除。") : QStringLiteral("记录不存在或保存失败。"),
+                      timestamp_ms);
+            requestCurrentRecords();
+            return;
+        }
+
         if (type == QStringLiteral("mode_changed")) {
             const QString mode = message.value(QStringLiteral("mode")).toString();
             mode_value_->setText(modeName(mode));
@@ -415,6 +569,7 @@ private:
     QSpinBox* port_spin_{nullptr};
     QPushButton* connect_button_{nullptr};
     QPushButton* reset_button_{nullptr};
+    QPushButton* records_button_{nullptr};
     QLabel* service_value_{nullptr};
     QLabel* board_value_{nullptr};
     QLabel* mode_value_{nullptr};
@@ -428,6 +583,13 @@ private:
     QCheckBox* speak_check_{nullptr};
     QPushButton* send_button_{nullptr};
     QTableWidget* event_table_{nullptr};
+    QDialog* record_dialog_{nullptr};
+    QTabWidget* record_tabs_{nullptr};
+    QTableWidget* fault_table_{nullptr};
+    QTableWidget* preference_table_{nullptr};
+    QTableWidget* location_table_{nullptr};
+    QLabel* record_summary_{nullptr};
+    QPushButton* records_refresh_button_{nullptr};
     bool reply_open_{false};
     int turn_count_{0};
     int event_count_{0};

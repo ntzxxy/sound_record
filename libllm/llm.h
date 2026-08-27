@@ -12,6 +12,12 @@ extern "C" {
  */
 typedef void (*llm_callback_t)(const char *text, int is_final);
 
+/** 一条待套用模型 Chat Template 的消息。 */
+typedef struct {
+    const char *role;
+    const char *content;
+} llm_chat_message_t;
+
 typedef struct {
     int max_tokens;
     float temperature;
@@ -72,6 +78,13 @@ int llm_append_text(const char *text);
  */
 int llm_format_prompt(const char *system_prompt, const char *user_message,
                       char *buf, int buf_size);
+
+/**
+ * 使用当前模型自带的 Chat Template 格式化多条消息。
+ * @param add_generation_prompt 非 0 时在末尾追加 assistant/model 的生成起始标记。
+ */
+int llm_format_messages(const llm_chat_message_t *messages, int message_count,
+                        int add_generation_prompt, char *buf, int buf_size);
 
 /**
  * 销毁 LLM 引擎，释放资源

@@ -99,6 +99,52 @@ std::string eventJson(const conversation::ConversationEvent& event) {
     return out.str();
 }
 
+std::string recordsJson(const conversation::ConversationRuntime& runtime,
+                        assistant::RecordType record_type) {
+    const auto memories = runtime.memorySnapshot();
+    const auto events = runtime.eventSnapshot();
+    std::ostringstream out;
+    out << "{\"type\":\"records\""
+        << ",\"record_type\":\"" << assistant::toString(record_type) << "\""
+        << ",\"items\":[";
+
+    bool first = true;
+    std::size_t count = 0;
+    auto beginItem = [&]() {
+        if (!first) out << ',';
+        first = false;
+        ++count;
+    };
+    if (record_type == assistant::RecordType::All ||
+        record_type == assistant::RecordType::DeviceFault) {
+        for (const auto& event : events) {
+            beginItem();
+            out << "{\"category\":\"DEVICE_FAULT\""
+                << ",\"timestamp\":" << event.timestamp
+                << ",\"room\":\"" << jsonEscape(event.room) << "\""
+                << ",\"device\":\"" << jsonEscape(event.device) << "\""
+                << ",\"event_type\":\"" << jsonEscape(event.event_type) << "\""
+                << ",\"description\":\"" << jsonEscape(event.description) << "\"}";
+        }
+    }
+    for (const auto& item : memories) {
+        const bool matches = record_type == assistant::RecordType::All ||
+            (record_type == assistant::RecordType::UserPreference &&
+             item.category == "USER_PREFERENCE") ||
+            (record_type == assistant::RecordType::ObjectLocation &&
+             item.category == "OBJECT_LOCATION");
+        if (!matches) continue;
+        beginItem();
+        out << "{\"category\":\"" << jsonEscape(item.category) << "\""
+            << ",\"timestamp\":" << item.updated_at
+            << ",\"subject\":\"" << jsonEscape(item.subject) << "\""
+            << ",\"attribute\":\"" << jsonEscape(item.attribute) << "\""
+            << ",\"value\":\"" << jsonEscape(item.value) << "\"}";
+    }
+    out << "]" << ",\"count\":" << count << "}";
+    return out.str();
+}
+
 }  // namespace
 
 struct LocalControlGateway::Client {
@@ -259,6 +305,64 @@ void LocalControlGateway::handleLine(const std::shared_ptr<Client>& client,
         return;
     }
 
+    if (type == "get_records") {
+        std::string requested_type = "ALL";
+        findJsonString(line, "record_type", &requested_type);
+        const auto record_type = assistant::recordTypeFromString(requested_type);
+        if (!record_type) {
+            client->sendLine("{\"type\":\"error\",\"text\":\"unsupported record type\"}");
+            return;
+        }
+        client->sendLine(recordsJson(runtime_, *record_type));
+        return;
+    }
+
+    if (type == "delete_record") {
+        std::string category;
+        if (!findJsonString(line, "category", &category)) {
+            client->sendLine("{\"type\":\"error\",\"text\":\"record category is required\"}");
+            return;
+        }
+
+        bool deleted = false;
+        if (category == "DEVICE_FAULT") {
+            std::string timestamp;
+            assistant::DeviceEvent event;
+            if (!findJsonString(line, "timestamp", &timestamp) ||
+                !findJsonString(line, "room", &event.room) ||
+                !findJsonString(line, "device", &event.device) ||
+                !findJsonString(line, "event_type", &event.event_type) ||
+                !findJsonString(line, "description", &event.description)) {
+                client->sendLine("{\"type\":\"error\",\"text\":\"incomplete device fault record\"}");
+                return;
+            }
+            try {
+                event.timestamp = std::stoll(timestamp);
+            } catch (...) {
+                client->sendLine("{\"type\":\"error\",\"text\":\"invalid record timestamp\"}");
+                return;
+            }
+            deleted = runtime_.deleteDeviceFaultRecord(event);
+        } else if (category == "USER_PREFERENCE" || category == "OBJECT_LOCATION") {
+            assistant::MemoryItem item;
+            item.category = category;
+            if (!findJsonString(line, "subject", &item.subject) ||
+                !findJsonString(line, "attribute", &item.attribute)) {
+                client->sendLine("{\"type\":\"error\",\"text\":\"incomplete memory record\"}");
+                return;
+            }
+            deleted = runtime_.deleteMemoryRecord(item);
+        } else {
+            client->sendLine("{\"type\":\"error\",\"text\":\"unsupported record category\"}");
+            return;
+        }
+
+        client->sendLine("{\"type\":\"record_deleted\",\"category\":\"" +
+                         jsonEscape(category) + "\",\"deleted\":" +
+                         (deleted ? "true" : "false") + "}");
+        return;
+    }
+
     if (type == "reset_conversation") {
         runtime_.resetConversation();
         client->sendLine("{\"type\":\"accepted\",\"request_id\":\"" +
@@ -319,24 +423,6 @@ void LocalControlGateway::broadcastStatus(const std::string& status,
                                 jsonEscape(status) + "\",\"text\":\"" +
                                 jsonEscape(message) + "\",\"timestamp_ms\":" +
                                 std::to_string(timestamp_ms) + "}";
-    std::vector<std::shared_ptr<Client>> clients;
-    {
-        std::lock_guard<std::mutex> lock(clients_mutex_);
-        clients = clients_;
-    }
-    for (const auto& client : clients) client->sendLine(payload);
-}
-
-void LocalControlGateway::broadcastMetric(const std::string& name, int64_t value,
-                                          const std::string& unit, uint64_t turn_id,
-                                          const std::string& detail) {
-    const std::string payload = "{\"type\":\"metric\",\"name\":\"" +
-                                jsonEscape(name) + "\",\"value\":" +
-                                std::to_string(value) + ",\"unit\":\"" +
-                                jsonEscape(unit) + "\",\"turn_id\":" +
-                                std::to_string(turn_id) + ",\"text\":\"" +
-                                jsonEscape(detail) + "\",\"timestamp_ms\":" +
-                                std::to_string(nowUnixMs()) + "}";
     std::vector<std::shared_ptr<Client>> clients;
     {
         std::lock_guard<std::mutex> lock(clients_mutex_);

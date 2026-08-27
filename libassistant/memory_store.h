@@ -18,6 +18,7 @@ public:
     bool save() const;
     void upsert(const MemoryItem& item);
     std::size_t removeMatching(const MemoryDeleteRequest& request);
+    bool removeExact(const MemoryItem& item);
     std::size_t clear();
 
     std::vector<MemoryItem> selectRelevant(const MemoryQuery& query,

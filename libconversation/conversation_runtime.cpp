@@ -84,6 +84,24 @@ void ConversationRuntime::setEventCallback(EventCallback callback) {
     callback_ = std::move(callback);
 }
 
+std::vector<assistant::MemoryItem> ConversationRuntime::memorySnapshot() const {
+    return assistant_service_ ? assistant_service_->memorySnapshot()
+                              : std::vector<assistant::MemoryItem>{};
+}
+
+std::vector<assistant::DeviceEvent> ConversationRuntime::eventSnapshot() const {
+    return assistant_service_ ? assistant_service_->eventSnapshot()
+                              : std::vector<assistant::DeviceEvent>{};
+}
+
+bool ConversationRuntime::deleteMemoryRecord(const assistant::MemoryItem& item) {
+    return assistant_service_ && assistant_service_->deleteMemoryRecord(item);
+}
+
+bool ConversationRuntime::deleteDeviceFaultRecord(const assistant::DeviceEvent& event) {
+    return assistant_service_ && assistant_service_->deleteDeviceFaultRecord(event);
+}
+
 void ConversationRuntime::emit(ConversationEvent event) const {
     if (event.timestamp_ms == 0) {
         event.timestamp_ms = static_cast<uint64_t>(

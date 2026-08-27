@@ -191,6 +191,19 @@ std::size_t MemoryStore::removeMatching(const MemoryDeleteRequest& request) {
     return old_size - items_.size();
 }
 
+bool MemoryStore::removeExact(const MemoryItem& item) {
+    if (item.category.empty() || item.subject.empty() || item.attribute.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = std::find_if(items_.begin(), items_.end(), [&](const MemoryItem& existing) {
+        return existing.category == item.category &&
+               existing.subject == item.subject &&
+               existing.attribute == item.attribute;
+    });
+    if (found == items_.end()) return false;
+    items_.erase(found);
+    return true;
+}
+
 std::size_t MemoryStore::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto old_size = items_.size();

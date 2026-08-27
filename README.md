@@ -95,7 +95,8 @@ models/
 │   ├── decoder-epoch-99-avg-1.onnx
 │   ├── joiner-epoch-99-avg-1.onnx
 │   └── tokens.txt
-├── qwen2.5-3b-instruct-q4_k_m.gguf
+├── gemma-4-E4B-it-Q4_0.gguf
+├── gemma-4-E4B_q4_0-it.gguf  # Google 官方 QAT 版，可通过 LLM_MODEL 选择
 └── vits-tts-zh/
     ├── model.int8.onnx 或 model.onnx
     └── tokens.txt
@@ -134,10 +135,10 @@ cmake --build <交叉编译构建目录> --target out -j
 ./run_server.sh
 ```
 
-脚本默认监听 8080 端口，构建目录为 `cmake-build-wsl-local`，录音保存到 `voice_records/`，TTS 线程数默认为 4。开发板客户端的端口当前也固定为 8080，因此按默认方式启动时不需要在命令末尾追加端口号。可按需覆盖构建目录、TTS 模型路径和 TTS 线程数：
+脚本默认监听 8080 端口，构建目录为 `cmake-build-wsl-local`，录音保存到 `voice_records/`，TTS 线程数默认为 4。开发板客户端的端口当前也固定为 8080，因此按默认方式启动时不需要在命令末尾追加端口号。默认 LLM 为实测响应更快的 `gemma-4-E4B-it-Q4_0.gguf`（约 4.3 GB）；Google 官方 QAT 版 `gemma-4-E4B_q4_0-it.gguf`（约 4.8 GB）可通过 `LLM_MODEL` 切换。可按需覆盖构建目录、LLM、TTS 模型路径和 TTS 线程数：
 
 ```bash
-BUILD_DIR=/path/to/build TTS_MODEL=/path/to/tts TTS_NUM_THREADS=4 ./run_server.sh
+BUILD_DIR=/path/to/build LLM_MODEL=/path/to/model.gguf TTS_MODEL=/path/to/tts TTS_NUM_THREADS=4 ./run_server.sh
 ```
 
 脚本会为 ONNX Runtime 设置 `LD_LIBRARY_PATH`。如 `stream_receiver` 不在预期位置，先按上节命令构建，或通过 `BUILD_DIR` 指向实际构建目录。

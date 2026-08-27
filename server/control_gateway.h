@@ -26,8 +26,6 @@ public:
     void stop();
     void broadcast(const conversation::ConversationEvent& event);
     void broadcastStatus(const std::string& status, const std::string& message = "");
-    void broadcastMetric(const std::string& name, int64_t value, const std::string& unit,
-                         uint64_t turn_id = 0, const std::string& detail = "");
 
 private:
     struct Client;

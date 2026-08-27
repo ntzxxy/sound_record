@@ -12,6 +12,7 @@ const char* toString(IntentType type) {
         case IntentType::MemoryWrite: return "MEMORY_WRITE";
         case IntentType::MemoryQuery: return "MEMORY_QUERY";
         case IntentType::MemoryDelete: return "MEMORY_DELETE";
+        case IntentType::RecordQuery: return "RECORD_QUERY";
         case IntentType::Clarify: return "CLARIFY";
     }
     return "CLARIFY";
@@ -24,7 +25,26 @@ std::optional<IntentType> intentTypeFromString(const std::string& value) {
     if (value == "MEMORY_WRITE") return IntentType::MemoryWrite;
     if (value == "MEMORY_QUERY") return IntentType::MemoryQuery;
     if (value == "MEMORY_DELETE") return IntentType::MemoryDelete;
+    if (value == "RECORD_QUERY") return IntentType::RecordQuery;
     if (value == "CLARIFY") return IntentType::Clarify;
+    return std::nullopt;
+}
+
+const char* toString(RecordType type) {
+    switch (type) {
+        case RecordType::All: return "ALL";
+        case RecordType::DeviceFault: return "DEVICE_FAULT";
+        case RecordType::UserPreference: return "USER_PREFERENCE";
+        case RecordType::ObjectLocation: return "OBJECT_LOCATION";
+    }
+    return "ALL";
+}
+
+std::optional<RecordType> recordTypeFromString(const std::string& value) {
+    if (value == "ALL") return RecordType::All;
+    if (value == "DEVICE_FAULT") return RecordType::DeviceFault;
+    if (value == "USER_PREFERENCE") return RecordType::UserPreference;
+    if (value == "OBJECT_LOCATION") return RecordType::ObjectLocation;
     return std::nullopt;
 }
 

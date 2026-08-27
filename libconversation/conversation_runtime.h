@@ -1,6 +1,7 @@
 #ifndef CONVERSATION_RUNTIME_H
 #define CONVERSATION_RUNTIME_H
 
+#include "assistant_types.h"
 #include "conversation_types.h"
 
 #include <atomic>
@@ -11,6 +12,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace assistant {
 class AssistantService;
@@ -35,6 +37,10 @@ public:
     uint64_t submit(ConversationRequest request);
     void resetConversation();
     void setEventCallback(EventCallback callback);
+    std::vector<assistant::MemoryItem> memorySnapshot() const;
+    std::vector<assistant::DeviceEvent> eventSnapshot() const;
+    bool deleteMemoryRecord(const assistant::MemoryItem& item);
+    bool deleteDeviceFaultRecord(const assistant::DeviceEvent& event);
 
 private:
     struct Task {

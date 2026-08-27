@@ -6,7 +6,9 @@ PORT=${1:-8080}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/cmake-build-wsl-local}"
 MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16"
-LLM_MODEL="${SCRIPT_DIR}/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+# 在当前 6 GB 显存设备上的实测中，此 GGML Q4_0 版首 token 更快、生成吞吐更高。
+# 可通过 LLM_MODEL=/path/to/model.gguf 切换到 Google 官方 QAT 版进行质量对比。
+LLM_MODEL="${LLM_MODEL:-${SCRIPT_DIR}/models/gemma-4-E4B-it-Q4_0.gguf}"
 TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/vits-tts-zh}"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
 
