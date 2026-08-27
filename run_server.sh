@@ -9,7 +9,7 @@ MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-
 # 在当前 6 GB 显存设备上的实测中，此 GGML Q4_0 版首 token 更快、生成吞吐更高。
 # 可通过 LLM_MODEL=/path/to/model.gguf 切换到 Google 官方 QAT 版进行质量对比。
 LLM_MODEL="${LLM_MODEL:-${SCRIPT_DIR}/models/gemma-4-E4B-it-Q4_0.gguf}"
-TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/vits-tts-zh}"
+TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/christina-tts-1.5-q4}"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
 
 if [ ! -x "${BUILD_DIR}/bin/stream_receiver" ]; then
@@ -31,6 +31,10 @@ export GGML_CUDA_GRAPH=0
 
 # TTS 是当前主要瓶颈；默认给 ONNX Runtime 多线程，仍可用环境变量覆盖。
 export TTS_NUM_THREADS="${TTS_NUM_THREADS:-4}"
+# Christina Qwen3-TTS runs through its C++/GGML CLI. On Jetson build this CLI
+# with GGML_CUDA=ON and set QWEN3_TTS_BACKEND=cuda (CPU is only a fallback).
+export TTS_QWEN_CLI="${TTS_QWEN_CLI:-${SCRIPT_DIR}/third_party/qwen3-tts.cpp/build/qwen3-tts-cli}"
+export QWEN3_TTS_BACKEND="${QWEN3_TTS_BACKEND:-auto}"
 
 echo "========================================="
 echo "  ASR + LLM + TTS 流式语音对话服务"

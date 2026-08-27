@@ -13,6 +13,9 @@ cmake-build-*/
 *.swo
 *~
 
+# Downloaded Christina Qwen3-TTS model assets
+models/christina-tts-1.5-q4/
+
 # Codex task files
 .codex-tasks/
 * TO DO list.csv

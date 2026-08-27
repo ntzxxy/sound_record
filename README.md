@@ -97,10 +97,44 @@ models/
 │   └── tokens.txt
 ├── gemma-4-E4B-it-Q4_0.gguf
 ├── gemma-4-E4B_q4_0-it.gguf  # Google 官方 QAT 版，可通过 LLM_MODEL 选择
+├── christina-tts-1.5-q4/
+│   ├── qwen3-tts-0.6b-f16.gguf
+│   ├── qwen3-tts-tokenizer-f16.gguf
+│   ├── christina.spk          # 英文音色
+│   └── christina-zh.spk       # 中文音色
 └── vits-tts-zh/
     ├── model.int8.onnx 或 model.onnx
     └── tokens.txt
 ```
+
+### Christina Qwen3-TTS（默认）
+
+默认 TTS 已替换为 `models/christina-tts-1.5-q4`。模型目录只保留中英文
+speaker embedding；核心 GGUF 权重由两种语言共享。`libtts` 会按文本是否包含
+汉字自动选择 `christina-zh.spk` / `zh` 或 `christina.spk` / `en`，并输出
+24 kHz、单声道 S16 PCM。
+
+推理程序位于 `third_party/qwen3-tts.cpp`。该程序在本项目中增加了 `-s` 参数，
+以加载模型随附的预计算 speaker embedding。首次在 Jetson Orin NX 上部署时，必须
+用 Jetson 的 CUDA 工具链构建 GGML 和推理程序：
+
+```bash
+cmake -S third_party/qwen3-tts.cpp/ggml -B third_party/qwen3-tts.cpp/ggml/build \
+  -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake --build third_party/qwen3-tts.cpp/ggml/build -j
+cmake -S third_party/qwen3-tts.cpp -B third_party/qwen3-tts.cpp/build \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build third_party/qwen3-tts.cpp/build -j
+```
+
+随后按正常方式启动服务即可；在 Orin 上显式使用 CUDA：
+
+```bash
+QWEN3_TTS_BACKEND=cuda ./run_server.sh
+```
+
+`run_server.sh` 会自动设置 `TTS_QWEN_CLI`。若将二进制部署到其他位置，可通过同名
+环境变量传入绝对路径。Qwen3-TTS 的 CPU 模式仅用于开发验证，不适合实时对话。
 
 ## 构建
 

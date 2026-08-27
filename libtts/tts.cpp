@@ -3,9 +3,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "sherpa-onnx/csrc/offline-tts.h"
 
@@ -13,6 +18,9 @@ static std::unique_ptr<sherpa_onnx::OfflineTts> g_tts;
 static int32_t g_sample_rate = 0;
 static thread_local tts_callback_t g_user_callback = nullptr;
 static thread_local bool g_had_audio = false;
+static bool g_use_qwen = false;
+static std::string g_qwen_model_dir;
+static std::string g_qwen_cli;
 
 static int32_t bridge_callback(const float *samples, int32_t n, float progress) {
     if (!g_user_callback || !samples || n <= 0) return 1;
@@ -34,8 +42,123 @@ static bool file_exists(const std::string& path) {
     return false;
 }
 
+static bool is_qwen_model_dir(const std::string& base) {
+    return file_exists(base + "/qwen3-tts-0.6b-f16.gguf") &&
+           file_exists(base + "/qwen3-tts-tokenizer-f16.gguf") &&
+           file_exists(base + "/christina.spk") &&
+           file_exists(base + "/christina-zh.spk");
+}
+
+static bool contains_han(const std::string& text) {
+    for (size_t i = 0; i + 2 < text.size(); ++i) {
+        const unsigned char c0 = static_cast<unsigned char>(text[i]);
+        const unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+        const unsigned char c2 = static_cast<unsigned char>(text[i + 2]);
+        if ((c0 >= 0xE4 && c0 <= 0xE9) && (c1 >= 0x80 && c1 <= 0xBF) &&
+            (c2 >= 0x80 && c2 <= 0xBF)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint16_t read_le16(const uint8_t *p) {
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+static uint32_t read_le32(const uint8_t *p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+static bool read_pcm16_wav(const std::string& path, std::vector<int16_t>& pcm, int32_t& sample_rate) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), {});
+    if (data.size() < 44 || std::memcmp(data.data(), "RIFF", 4) != 0 ||
+        std::memcmp(data.data() + 8, "WAVE", 4) != 0) return false;
+
+    uint16_t channels = 0;
+    uint16_t format = 0;
+    uint16_t bits = 0;
+    uint32_t rate = 0;
+    size_t pos = 12;
+    while (pos + 8 <= data.size()) {
+        const uint8_t *chunk = data.data() + pos;
+        const uint32_t size = read_le32(chunk + 4);
+        pos += 8;
+        if (size > data.size() - pos) return false;
+        if (std::memcmp(chunk, "fmt ", 4) == 0 && size >= 16) {
+            format = read_le16(data.data() + pos);
+            channels = read_le16(data.data() + pos + 2);
+            rate = read_le32(data.data() + pos + 4);
+            bits = read_le16(data.data() + pos + 14);
+        } else if (std::memcmp(chunk, "data", 4) == 0) {
+            if (format != 1 || channels != 1 || bits != 16 || rate == 0 || size % 2 != 0) return false;
+            pcm.resize(size / 2);
+            std::memcpy(pcm.data(), data.data() + pos, size);
+            sample_rate = static_cast<int32_t>(rate);
+            return !pcm.empty();
+        }
+        pos += size + (size & 1U);
+    }
+    return false;
+}
+
+static int qwen_speak(const char *text, tts_callback_t callback) {
+    const bool chinese = contains_han(text);
+    const std::string speaker = g_qwen_model_dir + (chinese ? "/christina-zh.spk" : "/christina.spk");
+    char output_template[] = "/tmp/qwen3_tts_XXXXXX";
+    const int output_fd = mkstemp(output_template);
+    if (output_fd < 0) return -1;
+    close(output_fd);
+
+    const char *threads_env = std::getenv("TTS_NUM_THREADS");
+    const char *threads = (threads_env && threads_env[0]) ? threads_env : "4";
+    const char *language = chinese ? "zh" : "en";
+    const char *args[] = {
+        g_qwen_cli.c_str(), "-m", g_qwen_model_dir.c_str(), "-s", speaker.c_str(),
+        "-l", language, "-t", text, "-o", output_template, "-j", threads,
+        "--temperature", "0.7", "--top-k", "20", "--top-p", "0.85",
+        "--repetition-penalty", "1.1", nullptr
+    };
+    const pid_t pid = fork();
+    if (pid == 0) {
+        execv(args[0], const_cast<char * const *>(args));
+        _exit(127);
+    }
+    int status = 0;
+    const bool succeeded = pid > 0 && waitpid(pid, &status, 0) == pid &&
+                           WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    std::vector<int16_t> pcm;
+    int32_t sample_rate = 0;
+    const bool wav_ok = succeeded && read_pcm16_wav(output_template, pcm, sample_rate);
+    unlink(output_template);
+    if (!wav_ok) {
+        fprintf(stderr, "[TTS] Qwen3-TTS synthesis failed\n");
+        return -1;
+    }
+    g_sample_rate = sample_rate;
+    callback(pcm.data(), static_cast<int>(pcm.size()), 1.0f);
+    return 0;
+}
+
 int tts_init(const char *model_dir) {
     std::string base = model_dir;
+    if (is_qwen_model_dir(base)) {
+        const char *cli_env = std::getenv("TTS_QWEN_CLI");
+        g_qwen_cli = (cli_env && cli_env[0]) ? cli_env : base + "/qwen3-tts-cli";
+        if (!file_exists(g_qwen_cli)) {
+            fprintf(stderr, "[TTS] Qwen3-TTS CLI not found: %s (set TTS_QWEN_CLI)\n", g_qwen_cli.c_str());
+            return -1;
+        }
+        g_use_qwen = true;
+        g_qwen_model_dir = base;
+        g_sample_rate = 24000;
+        fprintf(stderr, "[TTS] detected Christina Qwen3-TTS model, cli=%s\n", g_qwen_cli.c_str());
+        return 0;
+    }
+    g_use_qwen = false;
     sherpa_onnx::OfflineTtsConfig config;
     int num_threads = 1;
     const char *threads_env = std::getenv("TTS_NUM_THREADS");
@@ -100,7 +223,9 @@ int tts_init(const char *model_dir) {
 }
 
 int tts_speak(const char *text, tts_callback_t callback) {
-    if (!g_tts || !text || !text[0] || !callback) return -1;
+    if (!text || !text[0] || !callback) return -1;
+    if (g_use_qwen) return qwen_speak(text, callback);
+    if (!g_tts) return -1;
     g_user_callback = callback;
     g_had_audio = false;
     try {
@@ -117,4 +242,10 @@ int tts_speak(const char *text, tts_callback_t callback) {
 }
 
 int tts_sample_rate(void) { return g_sample_rate; }
-void tts_destroy(void) { g_tts.reset(); g_sample_rate = 0; }
+void tts_destroy(void) {
+    g_tts.reset();
+    g_use_qwen = false;
+    g_qwen_model_dir.clear();
+    g_qwen_cli.clear();
+    g_sample_rate = 0;
+}
