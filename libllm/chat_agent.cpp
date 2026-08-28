@@ -33,9 +33,11 @@ static std::string g_system_prompt;
 static bool g_first_turn = true;
 static bool g_is_r1_model = false;
 
-// 滑动窗口
+// 普通对话历史。工具结果不会写入这里：它们只作为当前轮可信上下文注入，
+// 防止过期的天气/设备数据在后续对话中被误当成最新事实。
 static std::deque<std::pair<std::string, std::string>> g_history;
 static const int MAX_HISTORY_PAIRS = 5;
+static const size_t MAX_RUNTIME_CONTEXT_CHARS = 3000;
 
 // callback 桥接（全局变量）
 // 原因：llama.cpp 的 llm_callback_t 签名只有 (text, is_final)，没有 void* userdata，
@@ -88,13 +90,21 @@ static std::string build_history_prompt(size_t begin) {
 }
 
 static bool rebuild_kv_cache_from_history(size_t keep_from, const char* reason) {
-    std::string rebuilt = build_history_prompt(keep_from);
+    size_t actual_begin = keep_from;
+    std::string rebuilt;
+    // 单轮回复可能很长。若历史无法装入提示词缓冲区，继续丢弃最旧轮次，
+    // 始终优先保留最近上下文，而不是让整轮对话直接失败。
+    while (actual_begin <= g_history.size()) {
+        rebuilt = build_history_prompt(actual_begin);
+        if (!rebuilt.empty()) break;
+        ++actual_begin;
+    }
     if (rebuilt.empty()) {
-        fprintf(stderr, "[Agent] 上下文重建失败：Chat Template 输出为空或过长\n");
+        fprintf(stderr, "[Agent] 上下文重建失败：系统提示过长\n");
         return false;
     }
-    if (keep_from > 0) {
-        g_history.erase(g_history.begin(), g_history.begin() + keep_from);
+    if (actual_begin > 0) {
+        g_history.erase(g_history.begin(), g_history.begin() + actual_begin);
     }
 
     llm_reset_context();
@@ -148,17 +158,24 @@ int agent_chat_with_context(const char *raw_user_message,
     const bool has_runtime_context = runtime_context && runtime_context[0];
     std::string model_user_message = cleaned;
     if (has_runtime_context) {
+        std::string bounded_context(runtime_context);
+        if (bounded_context.size() > MAX_RUNTIME_CONTEXT_CHARS) {
+            bounded_context.resize(MAX_RUNTIME_CONTEXT_CHARS);
+            bounded_context += "\n【工具结果过长，完整原始数据已在界面展示；请仅依据以上可见数据回答。】";
+            fprintf(stderr, "[Agent] 本轮工具上下文已从 %d 字截断至 %d 字\n",
+                    (int)std::strlen(runtime_context), (int)bounded_context.size());
+        }
         model_user_message =
-            std::string(runtime_context) +
+            bounded_context +
             "\n【当前用户输入】\n" + cleaned;
     }
 
-    // 2. 滑动窗口：满时重建上下文（清除 KV Cache → 重喂最近历史）
+    // 2. 滑动窗口：满时重建上下文（清除 KV Cache → 重喂最近历史）。
+    // 预留当前用户这一轮，因此最多保留 4 对旧历史；生成回复后正好回到 5 对。
     if ((int)g_history.size() >= MAX_HISTORY_PAIRS) {
         fprintf(stderr, "[Agent] 窗口满(%d对)，重建上下文\n", MAX_HISTORY_PAIRS);
-        size_t keep_from = g_history.size() > 2 ? g_history.size() - 2 : 0;
-        // 清空 KV Cache → 把重建的历史重新喂入模型
-        rebuild_kv_cache_from_history(keep_from, "window");
+        const size_t keep_from = g_history.size() - (MAX_HISTORY_PAIRS - 1);
+        if (!rebuild_kv_cache_from_history(keep_from, "window")) return -1;
     }
 
     // 3. 格式化 prompt
@@ -171,7 +188,15 @@ int agent_chat_with_context(const char *raw_user_message,
     } else {
         len = llm_format_prompt(nullptr, model_user_message.c_str(), buf, sizeof(buf));
     }
-    if (len < 0 || len >= (int)sizeof(buf)) return -1;
+    if (len < 0 || len >= (int)sizeof(buf)) {
+        // 当前消息与历史的组合超过提示词缓冲区时，逐轮裁剪旧历史后重试。
+        while (!g_history.empty()) {
+            if (!rebuild_kv_cache_from_history(1, "prompt_budget")) return -1;
+            len = llm_format_prompt(nullptr, model_user_message.c_str(), buf, sizeof(buf));
+            if (len >= 0 && len < (int)sizeof(buf)) break;
+        }
+        if (len < 0 || len >= (int)sizeof(buf)) return -1;
+    }
 
     // 4. R1 思考跳过
     if (g_is_r1_model) {

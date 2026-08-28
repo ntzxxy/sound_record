@@ -33,6 +33,24 @@ target_compile_options(test_conversation_runtime PRIVATE
     -Wpedantic
 )
 
+add_executable(test_chat_agent
+    test_chat_agent.cpp
+    chat_agent_llm_mock.cpp
+    ${PROJECT_SOURCE_DIR}/libllm/chat_agent.cpp
+)
+
+target_include_directories(test_chat_agent PRIVATE
+    ${PROJECT_SOURCE_DIR}/libllm
+)
+
+target_compile_features(test_chat_agent PRIVATE cxx_std_17)
+
+target_compile_options(test_chat_agent PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 add_executable(test_control_gateway
     test_control_gateway.cpp
     runtime_llm_stub.cpp
