@@ -88,7 +88,7 @@ private:
         host_edit_->setClearButtonEnabled(true);
         port_spin_ = new QSpinBox(connection_box);
         port_spin_->setRange(1, 65535);
-        port_spin_->setValue(8081);
+        port_spin_->setValue(18081);
         connect_button_ = new QPushButton(QStringLiteral("连接服务"), connection_box);
         reset_button_ = new QPushButton(QStringLiteral("新建会话"), connection_box);
         reset_button_->setEnabled(false);
@@ -501,6 +501,17 @@ private:
             conversation_->append(QStringLiteral("<span style=\"color:#64748b\">意图：%1</span>")
                                       .arg(intent.toHtmlEscaped()));
             appendLog(QStringLiteral("信息"), QStringLiteral("意图"), intent, timestamp_ms);
+        } else if (type == QStringLiteral("tool_result")) {
+            const QString tool_name = message.value(QStringLiteral("mode")).toString();
+            QJsonParseError parse_error;
+            const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &parse_error);
+            const QString displayed_json = parse_error.error == QJsonParseError::NoError
+                ? QString::fromUtf8(document.toJson(QJsonDocument::Indented))
+                : text;
+            conversation_->append(QStringLiteral("<span style=\"color:#64748b\">%1 接口返回：</span><pre>%2</pre>")
+                                      .arg(tool_name.toHtmlEscaped(), displayed_json.toHtmlEscaped()));
+            appendLog(QStringLiteral("信息"), QStringLiteral("实时查询"),
+                      QStringLiteral("已展示 %1 的原始 JSON 结果。").arg(tool_name), timestamp_ms);
         } else if (type == QStringLiteral("reply_delta")) {
             if (!reply_open_) {
                 conversation_->append(QStringLiteral("<b>助手：</b>"));

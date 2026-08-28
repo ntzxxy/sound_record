@@ -2,14 +2,14 @@
 # PC 端 ASR 接收服务一键启动
 # 用法: ./run_server.sh [端口号]
 
-PORT=${1:-8080}
+PORT=${1:-18080}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/cmake-build-wsl-local}"
 MODEL_DIR="${SCRIPT_DIR}/models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16"
 # 在当前 6 GB 显存设备上的实测中，此 GGML Q4_0 版首 token 更快、生成吞吐更高。
 # 可通过 LLM_MODEL=/path/to/model.gguf 切换到 Google 官方 QAT 版进行质量对比。
 LLM_MODEL="${LLM_MODEL:-${SCRIPT_DIR}/models/gemma-4-E4B-it-Q4_0.gguf}"
-TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/christina-tts-1.5-q4}"
+TTS_MODEL="${TTS_MODEL:-${SCRIPT_DIR}/models/kokoro-int8-multi-lang-v1_1}"
 SAVE_DIR="${SCRIPT_DIR}/voice_records"
 
 if [ ! -x "${BUILD_DIR}/bin/stream_receiver" ]; then
@@ -31,6 +31,10 @@ export GGML_CUDA_GRAPH=0
 
 # TTS 是当前主要瓶颈；默认给 ONNX Runtime 多线程，仍可用环境变量覆盖。
 export TTS_NUM_THREADS="${TTS_NUM_THREADS:-4}"
+# Kokoro INT8 defaults: speaker 50 (female) and a slightly faster natural rate.
+# Try another ID from 0 to 102 without rebuilding.
+export KOKORO_SPEAKER_ID="${KOKORO_SPEAKER_ID:-3}"
+export KOKORO_SPEED="${KOKORO_SPEED:-1.20}"
 # Christina Qwen3-TTS runs through its C++/GGML CLI. On Jetson build this CLI
 # with GGML_CUDA=ON and set QWEN3_TTS_BACKEND=cuda (CPU is only a fallback).
 export TTS_QWEN_CLI="${TTS_QWEN_CLI:-${SCRIPT_DIR}/third_party/qwen3-tts.cpp/build/qwen3-tts-cli}"
@@ -43,6 +47,7 @@ echo "  ASR模型: ${MODEL_DIR}"
 echo "  LLM模型: ${LLM_MODEL}"
 echo "  TTS模型: ${TTS_MODEL}"
 echo "  TTS线程: ${TTS_NUM_THREADS}"
+echo "  Kokoro speaker/speed: ${KOKORO_SPEAKER_ID}/${KOKORO_SPEED}"
 echo "  录音: ${SAVE_DIR}"
 echo "  构建目录: ${BUILD_DIR}"
 echo "========================================="

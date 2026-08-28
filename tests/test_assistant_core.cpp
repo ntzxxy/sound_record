@@ -5,6 +5,7 @@
 #include "intent_json_parser.h"
 #include "memory_store.h"
 #include "validators.h"
+#include "weather_service.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,9 @@ using assistant::MemoryDeleteRequest;
 using assistant::MemoryQuery;
 using assistant::MemoryStore;
 using assistant::ServiceResult;
+using assistant::WeatherQuery;
+using assistant::WeatherQueryValidator;
+using assistant::NormalizedWeatherQuery;
 
 #define CHECK(condition) \
     do { \
@@ -125,6 +129,40 @@ int main() {
         CHECK(result.device_command->device == "空调");
         CHECK(result.device_command->action == "TURN_ON");
         CHECK(!result.device_command->value);
+    }
+
+    {
+        IntentJsonParser parser;
+        IntentResult result;
+        std::string error;
+        const std::string json =
+            "{\"intent\":\"WEATHER_QUERY\",\"device_command\":null,"
+            "\"device_event\":null,\"memory\":null,\"memory_query\":null,"
+            "\"memory_delete\":null,\"weather_query\":{\"city\":\"北京\","
+            "\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-03\",\"days\":3},"
+            "\"missing_slots\":[],\"clarification_question\":\"\"}";
+        CHECK(parser.parse(json, &result, &error));
+        CHECK(result.intent == IntentType::WeatherQuery);
+        CHECK(result.weather_query);
+        CHECK(result.weather_query->city == "北京");
+        CHECK(result.weather_query->start_date == "2026-08-01");
+        CHECK(result.weather_query->end_date == "2026-08-03");
+        CHECK(result.weather_query->days == 3);
+    }
+
+    {
+        WeatherQuery request;
+        request.city = "北京";
+        NormalizedWeatherQuery normalized;
+        std::string error;
+        CHECK(WeatherQueryValidator::normalize(request, &normalized, &error));
+        CHECK(normalized.start_date == WeatherQueryValidator::localToday());
+        CHECK(normalized.end_date == normalized.start_date);
+        CHECK(normalized.days == 1);
+
+        request.start_date = "2026-02-30";
+        CHECK(!WeatherQueryValidator::normalize(request, &normalized, &error));
+        CHECK(error == "invalid_date");
     }
 
     {

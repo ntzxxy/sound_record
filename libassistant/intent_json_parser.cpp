@@ -253,6 +253,16 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         parsed.memory_delete = request;
     }
 
+    std::string weather_json = getObjectField(parsed.raw_json, "weather_query", &is_null);
+    if (!weather_json.empty()) {
+        WeatherQuery query;
+        getStringField(weather_json, "city", &query.city);
+        getStringField(weather_json, "start_date", &query.start_date);
+        getStringField(weather_json, "end_date", &query.end_date);
+        query.days = static_cast<int>(getOptionalNumberField(weather_json, "days").value_or(0));
+        parsed.weather_query = query;
+    }
+
     parsed.missing_slots = getStringArrayField(parsed.raw_json, "missing_slots");
     getStringField(parsed.raw_json, "clarification_question", &parsed.clarification_question);
     parsed.json_valid = true;

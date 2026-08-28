@@ -7,6 +7,7 @@
 #include "intent_preprocessor.h"
 #include "memory_store.h"
 #include "validators.h"
+#include "weather_service.h"
 
 #include <optional>
 #include <string>
@@ -37,6 +38,7 @@ private:
     MemoryStore memory_store_;
     EventLog event_log_;
     ContextBuilder context_builder_;
+    WeatherService weather_service_;
     std::optional<DeviceCommand> pending_device_command_;
     int pending_device_turns_remaining_{0};
 };

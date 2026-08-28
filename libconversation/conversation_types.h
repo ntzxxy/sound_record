@@ -17,6 +17,7 @@ enum class EventType {
     ModeChanged,
     UserMessage,
     IntentResult,
+    ToolResult,
     ReplyDelta,
     ReplyFinal,
     Error,

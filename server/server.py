@@ -4,7 +4,7 @@ import time
 
 # 配置信息
 LISTEN_IP = '0.0.0.0'  # 监听所有网卡
-LISTEN_PORT = 8080      # 必须与你板子代码里的端口一致
+LISTEN_PORT = 18080      # 必须与你板子代码里的端口一致
 SAVE_DIR = "./received_audio"
 
 if not os.path.exists(SAVE_DIR):

@@ -19,6 +19,7 @@ static int32_t g_sample_rate = 0;
 static thread_local tts_callback_t g_user_callback = nullptr;
 static thread_local bool g_had_audio = false;
 static bool g_use_qwen = false;
+static bool g_use_kokoro = false;
 static std::string g_qwen_model_dir;
 static std::string g_qwen_cli;
 
@@ -47,6 +48,17 @@ static bool is_qwen_model_dir(const std::string& base) {
            file_exists(base + "/qwen3-tts-tokenizer-f16.gguf") &&
            file_exists(base + "/christina.spk") &&
            file_exists(base + "/christina-zh.spk");
+}
+
+static bool is_kokoro_model_dir(const std::string& base) {
+    return file_exists(base + "/model.int8.onnx") &&
+           file_exists(base + "/voices.bin") &&
+           file_exists(base + "/tokens.txt") &&
+           file_exists(base + "/lexicon-us-en.txt") &&
+           file_exists(base + "/lexicon-zh.txt") &&
+           file_exists(base + "/date-zh.fst") &&
+           file_exists(base + "/number-zh.fst") &&
+           file_exists(base + "/phone-zh.fst");
 }
 
 static bool contains_han(const std::string& text) {
@@ -159,6 +171,7 @@ int tts_init(const char *model_dir) {
         return 0;
     }
     g_use_qwen = false;
+    g_use_kokoro = false;
     sherpa_onnx::OfflineTtsConfig config;
     int num_threads = 1;
     const char *threads_env = std::getenv("TTS_NUM_THREADS");
@@ -166,13 +179,22 @@ int tts_init(const char *model_dir) {
         int parsed = std::atoi(threads_env);
         if (parsed > 0) num_threads = parsed;
     }
-    if (num_threads > 8) num_threads = 8;
+    if (num_threads > 12) num_threads = 12;
     config.model.num_threads = num_threads;
     config.model.provider    = "cpu";
     config.max_num_sentences = 1;  // 按句/chunk 回调，便于边合成边播放
 
-    // 自动检测模型类型：tts.json → Supertonic，否则 VITS/Matcha
-    if (file_exists(base + "/tts.json")) {
+    // Detect Kokoro, Supertonic, or VITS/Matcha.
+    if (is_kokoro_model_dir(base)) {
+        config.model.kokoro.model = base + "/model.int8.onnx";
+        config.model.kokoro.voices = base + "/voices.bin";
+        config.model.kokoro.tokens = base + "/tokens.txt";
+        config.model.kokoro.lexicon = base + "/lexicon-us-en.txt," + base + "/lexicon-zh.txt";
+        config.model.kokoro.data_dir = base + "/espeak-ng-data";
+        config.rule_fsts = base + "/date-zh.fst," + base + "/number-zh.fst," + base + "/phone-zh.fst";
+        g_use_kokoro = true;
+        fprintf(stderr, "[TTS] detected Kokoro INT8 Chinese-English model\n");
+    } else if (file_exists(base + "/tts.json")) {
         config.model.supertonic.duration_predictor = base + "/duration_predictor.int8.onnx";
         config.model.supertonic.text_encoder       = base + "/text_encoder.int8.onnx";
         config.model.supertonic.vector_estimator   = base + "/vector_estimator.int8.onnx";
@@ -230,7 +252,15 @@ int tts_speak(const char *text, tts_callback_t callback) {
     g_had_audio = false;
     try {
         sherpa_onnx::GenerationConfig gen_cfg;
-        gen_cfg.extra["lang"] = "zh";
+        if (g_use_kokoro) {
+            const char *speaker_env = std::getenv("KOKORO_SPEAKER_ID");
+            const char *speed_env = std::getenv("KOKORO_SPEED");
+            gen_cfg.sid = (speaker_env && speaker_env[0]) ? std::atoi(speaker_env) : 50;
+            gen_cfg.speed = (speed_env && speed_env[0]) ? static_cast<float>(std::atof(speed_env)) : 1.10f;
+            gen_cfg.silence_scale = 0.2f;
+        } else {
+            gen_cfg.extra["lang"] = "zh";
+        }
         g_tts->Generate(std::string(text), gen_cfg, bridge_callback);
     } catch (const std::exception &e) {
         fprintf(stderr, "[TTS] 合成失败: %s\n", e.what());
@@ -245,6 +275,7 @@ int tts_sample_rate(void) { return g_sample_rate; }
 void tts_destroy(void) {
     g_tts.reset();
     g_use_qwen = false;
+    g_use_kokoro = false;
     g_qwen_model_dir.clear();
     g_qwen_cli.clear();
     g_sample_rate = 0;

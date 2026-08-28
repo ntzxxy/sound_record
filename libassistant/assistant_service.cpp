@@ -698,6 +698,55 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             break;
         }
 
+        case IntentType::WeatherQuery: {
+            if (!intent.weather_query) {
+                result.call_llm = false;
+                result.fixed_reply = "请告诉我需要查询天气的地点。";
+                break;
+            }
+
+            NormalizedWeatherQuery normalized;
+            std::string error;
+            if (!WeatherQueryValidator::normalize(*intent.weather_query, &normalized, &error)) {
+                result.call_llm = false;
+                if (error == "missing_city") {
+                    result.fixed_reply = "请告诉我需要查询天气的地点。";
+                } else if (error == "future_date_unsupported") {
+                    result.fixed_reply = "当前历史天气查询不支持未来日期。";
+                } else if (error == "date_range_too_long") {
+                    result.fixed_reply = "单次天气查询最长支持30天。";
+                } else {
+                    result.fixed_reply = "日期或查询时长不合法，请按YYYY-MM-DD格式重新说明。";
+                }
+                std::cout << "[WeatherQuery] status=invalid error=" << error << std::endl;
+                break;
+            }
+
+            result.tool_name = "weather_history";
+            if (!weather_service_.queryHistory(normalized, &result.tool_result_json,
+                                               &result.runtime_context, &error)) {
+                result.call_llm = false;
+                if (error == "location_not_found") {
+                    result.fixed_reply = "没有找到这个地点，请换一个城市名称再试。";
+                } else if (error == "unauthorized") {
+                    result.fixed_reply = "天气服务认证失败，请检查服务端API Key。";
+                } else if (error == "service_busy") {
+                    result.fixed_reply = "天气服务繁忙，请稍后再试。";
+                } else {
+                    result.fixed_reply = "暂时无法获取天气信息，请稍后再试。";
+                }
+                std::cout << "[WeatherQuery] status=failed error=" << error << std::endl;
+                break;
+            }
+
+            result.call_llm = true;
+            std::cout << "[WeatherQuery] status=success city=" << normalized.city
+                      << " start=" << normalized.start_date
+                      << " end=" << normalized.end_date
+                      << " days=" << normalized.days << std::endl;
+            break;
+        }
+
         case IntentType::RecordQuery: {
             if (!intent.record_query) {
                 result.call_llm = false;

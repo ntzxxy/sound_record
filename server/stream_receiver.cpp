@@ -418,6 +418,10 @@ static void handle_conversation_event(const conversation::ConversationEvent& eve
             std::cout << "[TaskClass] " << event.intent << std::endl;
             break;
 
+        case conversation::EventType::ToolResult:
+            std::cout << "[ToolResult] " << event.mode << " " << event.text << std::endl;
+            break;
+
         case conversation::EventType::ReplyDelta: {
             const long long now = metric_now_ms();
             if (!g_metric_llm_first_token_seen.exchange(true)) {
@@ -503,7 +507,7 @@ int start_stream_server(int port, const std::string& save_dir,
             return -1;
         }
         control_gateway = std::make_unique<server::LocalControlGateway>(
-            *conversation_runtime, 8081);
+            *conversation_runtime, 18081);
         conversation_runtime->setEventCallback(
             [&control_gateway](const conversation::ConversationEvent& event) {
                 handle_conversation_event(event, control_gateway.get());
@@ -782,7 +786,7 @@ int start_stream_server(int port, const std::string& save_dir,
 }
 
 int main(int argc, char* argv[]) {
-    int port = 8080;
+    int port = 18080;
     std::string save_dir = "./voice_records";
     std::string model_dir = "../models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16";
     std::string llm_model_path;

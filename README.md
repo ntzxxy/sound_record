@@ -107,9 +107,15 @@ models/
     └── tokens.txt
 ```
 
-### Christina Qwen3-TTS（默认）
+### Kokoro INT8（默认）
 
-默认 TTS 已替换为 `models/christina-tts-1.5-q4`。模型目录只保留中英文
+默认 TTS 为 `models/kokoro-int8-multi-lang-v1_1`，是中英文混合输入的 INT8 ONNX 模型，带 103 个音色。模型权重约 109 MB、音色库约 51 MB；服务启动时加载一次，常驻内存约 0.35 GB。
+
+`KOKORO_SPEAKER_ID` 可选择 0 到 102 的音色，默认 50（女声）；`KOKORO_SPEED` 默认 1.30。此模型不保证特定动漫角色音色，但女声音色适合二次元风格的轻快播报。
+
+### Christina Qwen3-TTS（可选，高质量但较慢）
+
+Christina 模型目录只保留中英文
 speaker embedding；核心 GGUF 权重由两种语言共享。`libtts` 会按文本是否包含
 汉字自动选择 `christina-zh.spk` / `zh` 或 `christina.spk` / `en`，并输出
 24 kHz、单声道 S16 PCM。
@@ -169,10 +175,10 @@ cmake --build <交叉编译构建目录> --target out -j
 ./run_server.sh
 ```
 
-脚本默认监听 8080 端口，构建目录为 `cmake-build-wsl-local`，录音保存到 `voice_records/`，TTS 线程数默认为 4。开发板客户端的端口当前也固定为 8080，因此按默认方式启动时不需要在命令末尾追加端口号。默认 LLM 为实测响应更快的 `gemma-4-E4B-it-Q4_0.gguf`（约 4.3 GB）；Google 官方 QAT 版 `gemma-4-E4B_q4_0-it.gguf`（约 4.8 GB）可通过 `LLM_MODEL` 切换。可按需覆盖构建目录、LLM、TTS 模型路径和 TTS 线程数：
+脚本默认监听 18080 端口，构建目录为 `cmake-build-wsl-local`，录音保存到 `voice_records/`，TTS 线程数默认为 4，Kokoro 默认语速为 1.30。开发板客户端的端口当前也固定为 18080，因此按默认方式启动时不需要在命令末尾追加端口号。默认 LLM 为实测响应更快的 `gemma-4-E4B-it-Q4_0.gguf`（约 4.3 GB）；Google 官方 QAT 版 `gemma-4-E4B_q4_0-it.gguf`（约 4.8 GB）可通过 `LLM_MODEL` 切换。可按需覆盖构建目录、LLM、TTS 模型路径和 TTS 线程数：
 
 ```bash
-BUILD_DIR=/path/to/build LLM_MODEL=/path/to/model.gguf TTS_MODEL=/path/to/tts TTS_NUM_THREADS=4 ./run_server.sh
+BUILD_DIR=/path/to/build LLM_MODEL=/path/to/model.gguf TTS_MODEL=/path/to/tts TTS_NUM_THREADS=4 KOKORO_SPEAKER_ID=50 KOKORO_SPEED=1.10 ./run_server.sh
 ```
 
 脚本会为 ONNX Runtime 设置 `LD_LIBRARY_PATH`。如 `stream_receiver` 不在预期位置，先按上节命令构建，或通过 `BUILD_DIR` 指向实际构建目录。

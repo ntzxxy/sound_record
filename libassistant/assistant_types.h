@@ -16,6 +16,7 @@ enum class IntentType {
     MemoryQuery,
     MemoryDelete,
     RecordQuery,
+    WeatherQuery,
     Clarify
 };
 
@@ -77,6 +78,15 @@ struct RecordQuery {
     RecordType type{RecordType::All};
 };
 
+// 天气请求只保存语义层已明确给出的参数。日期为空时由服务端读取本机
+// 系统时钟补齐，不能由 LLM 猜测“今天”的具体日期。
+struct WeatherQuery {
+    std::string city;
+    std::string start_date;
+    std::string end_date;
+    int days{0};
+};
+
 struct IntentResult {
     IntentType intent{IntentType::Clarify};
     std::optional<DeviceCommand> device_command;
@@ -85,6 +95,7 @@ struct IntentResult {
     std::optional<MemoryQuery> memory_query;
     std::optional<MemoryDeleteRequest> memory_delete;
     std::optional<RecordQuery> record_query;
+    std::optional<WeatherQuery> weather_query;
     std::vector<std::string> missing_slots;
     std::string clarification_question;
     std::string raw_json;
@@ -104,6 +115,8 @@ struct ServiceResult {
     bool call_llm{true};
     std::string runtime_context;
     std::string fixed_reply;
+    std::string tool_name;
+    std::string tool_result_json;
     std::optional<ResolvedDeviceCommand> device_command;
     std::optional<DeviceEvent> device_event;
     std::optional<MemoryItem> stored_memory;

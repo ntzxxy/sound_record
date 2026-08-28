@@ -16,7 +16,7 @@ namespace server {
 class LocalControlGateway {
 public:
     explicit LocalControlGateway(conversation::ConversationRuntime& runtime,
-                                 int port = 8081);
+                                 int port = 18081);
     ~LocalControlGateway();
 
     LocalControlGateway(const LocalControlGateway&) = delete;
@@ -37,7 +37,7 @@ private:
     std::string statusJson() const;
 
     conversation::ConversationRuntime& runtime_;
-    int port_{8081};
+    int port_{18081};
     int listen_fd_{-1};
     std::atomic<bool> running_{false};
     std::thread accept_thread_;

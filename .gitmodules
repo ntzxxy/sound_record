@@ -1,0 +1,3 @@
+[submodule "deps/uapi-cpp"]
+	path = deps/uapi-cpp
+	url = https://github.com/AxT-Team/uapi-sdk-cpp.git

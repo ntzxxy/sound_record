@@ -21,6 +21,7 @@ const char* toString(EventType type) {
         case EventType::ModeChanged: return "mode_changed";
         case EventType::UserMessage: return "user_message";
         case EventType::IntentResult: return "intent_result";
+        case EventType::ToolResult: return "tool_result";
         case EventType::ReplyDelta: return "reply_delta";
         case EventType::ReplyFinal: return "reply_final";
         case EventType::Error: return "error";
@@ -143,6 +144,11 @@ void ConversationRuntime::workerLoop() {
         emit({EventType::IntentResult, request.source, request.turn_id,
               request.request_id, "", "", assistant::toString(result.task_type),
               request.enable_tts, false});
+        if (!result.tool_result_json.empty()) {
+            emit({EventType::ToolResult, request.source, request.turn_id,
+                  request.request_id, result.tool_result_json, result.tool_name,
+                  assistant::toString(result.task_type), false, false});
+        }
 
         if (!result.call_llm) {
             if (!result.fixed_reply.empty()) {

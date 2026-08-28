@@ -16,6 +16,13 @@ cmake-build-*/
 # Downloaded Christina Qwen3-TTS model assets
 models/christina-tts-1.5-q4/
 
+# Downloaded TTS model assets. They are reproducible runtime dependencies and
+# must be downloaded during deployment instead of being committed to Git.
+models/kokoro-int8-multi-lang-v1_1/
+models/supertonic-tts/
+models/vits-tts-zh/
+*.spk
+
 # Codex task files
 .codex-tasks/
 * TO DO list.csv
