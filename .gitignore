@@ -23,6 +23,15 @@ models/supertonic-tts/
 models/vits-tts-zh/
 *.spk
 
+# 摄像头运行时产生的截图和后续本地视觉记录可能包含隐私画面，不提交到仓库。
+/vision_records/
+
+# 视觉开发环境、预训练权重与部署导出物都可重新获得，且体积较大。
+/.venv-vision/
+/models/vision/
+/runs/vision/
+/third_party/onnxruntime/
+
 # Codex task files
 .codex-tasks/
 * TO DO list.csv

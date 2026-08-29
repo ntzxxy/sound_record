@@ -20,6 +20,12 @@ endif()
 # 运行时依赖 Linux 网络、音频、推理库；Windows 上仅构建 Qt 客户端时不应被带入。
 option(BUILD_ASSISTANT_RUNTIME "Build the assistant runtime and its dependencies" ${_default_assistant_runtime})
 
+# 视觉模块与语音运行时解耦：开发期可以单独验证摄像头，后续也可复用到 Jetson。
+option(BUILD_VISION "Build the OpenCV camera capture and vision foundation" ON)
+
+# VLM 依赖 llama.cpp 的实验性 mtmd 库。默认关闭，避免普通 YOLO 预览额外加载 Gemma。
+option(BUILD_VLM "Build the Gemma multimodal scene-analysis worker" OFF)
+
 # 流传输开关（默认 ON），在顶层定义确保 libaudio/libnet/src 全部生效
 option(STREAMING_MODE "Enable real-time TCP streaming mode" ON)
 if(STREAMING_MODE)
@@ -66,9 +72,21 @@ if(BUILD_LLM AND CMAKE_CROSSCOMPILING)
     message(STATUS ">>>> 交叉编译环境，跳过 llama.cpp（仅限 PC 端使用）<<<<")
     set(BUILD_LLM OFF)
 endif()
-if(BUILD_ASSISTANT_RUNTIME AND BUILD_LLM)
+if((BUILD_ASSISTANT_RUNTIME AND BUILD_LLM) OR (BUILD_VISION AND BUILD_VLM))
+    if(BUILD_VLM)
+        # 只构建可被 libvision 链接的 mtmd 库，不构建 llama.cpp 的工具集。
+        set(LLAMA_BUILD_MTMD ON CACHE BOOL "llama: build multimodal library" FORCE)
+        set(LLAMA_BUILD_COMMON OFF CACHE BOOL "llama: build common library" FORCE)
+        set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "llama: build tools" FORCE)
+    endif()
     add_subdirectory(third_party/llama.cpp)
+endif()
+if(BUILD_ASSISTANT_RUNTIME AND BUILD_LLM)
     add_subdirectory(libllm)
+endif()
+
+if(BUILD_VISION AND NOT CMAKE_CROSSCOMPILING)
+    add_subdirectory(libvision)
 endif()
 
 # PC 端 server 只在使用 x86 原生编译器时才构建，arm 交叉编译时自动跳过
@@ -82,8 +100,11 @@ if(BUILD_ASSISTANT_RUNTIME AND BUILD_SERVER)
 endif()
 
 option(BUILD_ASSISTANT_TOOLS "Build assistant context demo and tests" ON)
-if(BUILD_ASSISTANT_RUNTIME AND BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING)
+if(BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING AND (BUILD_ASSISTANT_RUNTIME OR BUILD_VISION))
     add_subdirectory(tools)
+endif()
+
+if(BUILD_ASSISTANT_RUNTIME AND BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING)
     add_subdirectory(tests)
 endif()
 
