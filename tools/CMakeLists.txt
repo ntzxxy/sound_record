@@ -43,8 +43,32 @@ endif()
 if(TARGET vision AND TARGET onnxruntime)
     add_executable(yolo_preview yolo_preview.cpp)
     target_link_libraries(yolo_preview PRIVATE vision)
+    if(TARGET asr)
+        target_sources(yolo_preview PRIVATE microphone_asr.cpp)
+        target_link_libraries(yolo_preview PRIVATE asr asound pthread)
+        target_compile_definitions(yolo_preview PRIVATE VISION_HAS_LOCAL_ASR=1)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(PULSE_SIMPLE QUIET IMPORTED_TARGET libpulse-simple)
+        endif()
+        if(TARGET PkgConfig::PULSE_SIMPLE)
+            target_link_libraries(yolo_preview PRIVATE PkgConfig::PULSE_SIMPLE)
+            target_compile_definitions(yolo_preview PRIVATE VISION_HAS_PULSE_AUDIO=1)
+        endif()
+    endif()
     target_compile_features(yolo_preview PRIVATE cxx_std_17)
     target_compile_options(yolo_preview PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+endif()
+
+if(TARGET vision AND TARGET mtmd)
+    add_executable(vision_chat_demo vision_chat_demo.cpp)
+    target_link_libraries(vision_chat_demo PRIVATE vision)
+    target_compile_features(vision_chat_demo PRIVATE cxx_std_17)
+    target_compile_options(vision_chat_demo PRIVATE
         -Wall
         -Wextra
         -Wpedantic

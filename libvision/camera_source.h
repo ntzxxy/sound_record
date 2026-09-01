@@ -9,8 +9,10 @@ namespace vision {
 struct CameraConfig {
     // Linux V4L2 default.  "0" is also accepted as an OpenCV device index.
     std::string device = "/dev/video0";
-    int width = 640;
-    int height = 480;
+    // Keep the original 1080p frame for on-demand VLM/OCR snapshots. YOLO
+    // letterboxes this frame to its independent 640x640 model input.
+    int width = 1920;
+    int height = 1080;
     int frames_per_second = 15;
     // USB/IP 下未压缩 YUYV 容易造成传输超时；优先使用摄像头普遍支持的 MJPEG。
     std::string pixel_format = "MJPG";

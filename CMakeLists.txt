@@ -26,6 +26,10 @@ option(BUILD_VISION "Build the OpenCV camera capture and vision foundation" ON)
 # VLM 依赖 llama.cpp 的实验性 mtmd 库。默认关闭，避免普通 YOLO 预览额外加载 Gemma。
 option(BUILD_VLM "Build the Gemma multimodal scene-analysis worker" OFF)
 
+# 本地视觉工作台的语音输入测试：复用现有 sherpa-onnx ASR，但不启用
+# 助手运行时、TCP 服务或 TTS，方便在 WSL/Jetson 上独立验证语音问图。
+option(BUILD_VISION_VOICE_TEST "Build local microphone input for the vision workbench" OFF)
+
 # 流传输开关（默认 ON），在顶层定义确保 libaudio/libnet/src 全部生效
 option(STREAMING_MODE "Enable real-time TCP streaming mode" ON)
 if(STREAMING_MODE)
@@ -57,13 +61,15 @@ if(BUILD_ASR AND CMAKE_CROSSCOMPILING)
     message(STATUS ">>>> 交叉编译环境，跳过 sherpa-onnx（仅限 PC 端使用）<<<<")
     set(BUILD_ASR OFF)
 endif()
-if(BUILD_ASSISTANT_RUNTIME AND BUILD_ASR)
+if((BUILD_ASSISTANT_RUNTIME OR (BUILD_VISION AND BUILD_VISION_VOICE_TEST)) AND BUILD_ASR)
     # sherpa-onnx v1.13.3 的外层 CMake 有子目录 add_subdirectory(sherpa-onnx)
     # 先把 CMAKE_CURRENT_SOURCE_DIR 指向正确位置才能找到 sherpa-onnx/ 子目录
     set(saved_CMAKE_CURRENT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     add_subdirectory(third_party/sherpa-onnx)
     add_subdirectory(libasr)
-    add_subdirectory(libtts)
+    if(BUILD_ASSISTANT_RUNTIME)
+        add_subdirectory(libtts)
+    endif()
 endif()
 
 # LLM 引擎仅在 PC/Jetson 时构建

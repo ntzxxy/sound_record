@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <iostream>
+#include <thread>
 #include <utility>
 
 #include <opencv2/videoio.hpp>
@@ -89,6 +91,15 @@ bool CameraSource::open(const CameraConfig& config, std::string* error_message) 
         std::cerr << "警告：摄像头未接受请求的 " << config.pixel_format
                   << " 格式，当前格式可能与请求不同。\n";
     }
+    const int actual_width = static_cast<int>(std::lround(impl_->capture.get(cv::CAP_PROP_FRAME_WIDTH)));
+    const int actual_height = static_cast<int>(std::lround(impl_->capture.get(cv::CAP_PROP_FRAME_HEIGHT)));
+    const int actual_fps = static_cast<int>(std::lround(impl_->capture.get(cv::CAP_PROP_FPS)));
+    std::cout << "摄像头采集配置：请求 " << config.width << 'x' << config.height << '@'
+              << config.frames_per_second << " FPS，实际 " << actual_width << 'x' << actual_height << '@'
+              << actual_fps << " FPS。\n";
+    if (actual_width != config.width || actual_height != config.height) {
+        std::cerr << "警告：摄像头未按请求分辨率输出；将使用实际分辨率。\n";
+    }
     return true;
 }
 
@@ -106,18 +117,32 @@ bool CameraSource::read(Frame* frame, std::string* error_message) {
         return false;
     }
 
-    cv::Mat image;
-    if (!impl_->capture.read(image) || image.empty()) {
-        if (error_message != nullptr) {
-            *error_message = "未能从摄像头读取有效画面。";
+    // USB/IP cameras can occasionally deliver an incomplete MJPEG packet. In
+    // OpenCV 4.5 this may throw from imdecode(), rather than simply returning
+    // an empty frame. A bad video packet must not crash the VLM workbench.
+    std::string last_failure;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        cv::Mat image;
+        try {
+            if (impl_->capture.read(image) && !image.empty()) {
+                frame->bgr_image = std::move(image);
+                frame->sequence = ++impl_->sequence;
+                frame->captured_at_unix_ms = now_unix_ms();
+                return true;
+            }
+            last_failure = "摄像头返回了空画面";
+        } catch (const cv::Exception& exception) {
+            last_failure = std::string("OpenCV 解码摄像头画面失败：") + exception.what();
         }
-        return false;
+        if (attempt < 2) {
+            std::cerr << "警告：摄像头帧无效，正在重试（" << (attempt + 1) << "/3）。\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
     }
-
-    frame->bgr_image = std::move(image);
-    frame->sequence = ++impl_->sequence;
-    frame->captured_at_unix_ms = now_unix_ms();
-    return true;
+    if (error_message != nullptr) {
+        *error_message = "连续 3 次未能读取有效摄像头画面：" + last_failure;
+    }
+    return false;
 }
 
 void CameraSource::close() {

@@ -4,11 +4,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -67,49 +69,68 @@ std::string truncate_utf8(const std::string& text, std::size_t max_characters) {
         index += width;
         ++characters;
     }
-    if (index == text.size()) {
-        return text;
-    }
-    return text.substr(0, index) + "...";
+    return index == text.size() ? text : text.substr(0, index) + "...";
+}
+
+Frame clone_frame(const Frame& frame) {
+    Frame copy = frame;
+    copy.bgr_image = frame.bgr_image.clone();
+    return copy;
 }
 
 }  // namespace
 
 const char* scene_analysis_state_name(SceneAnalysisState state) {
     switch (state) {
-        case SceneAnalysisState::kDisabled:
-            return "disabled";
-        case SceneAnalysisState::kLoading:
-            return "loading";
-        case SceneAnalysisState::kWaiting:
-            return "waiting";
-        case SceneAnalysisState::kCaptured:
-            return "captured";
-        case SceneAnalysisState::kAnalyzing:
-            return "analyzing";
-        case SceneAnalysisState::kCompleted:
-            return "completed";
-        case SceneAnalysisState::kFailed:
-            return "failed";
-        case SceneAnalysisState::kStopped:
-            return "stopped";
+        case SceneAnalysisState::kDisabled: return "disabled";
+        case SceneAnalysisState::kLoading: return "loading";
+        case SceneAnalysisState::kWaiting: return "waiting";
+        case SceneAnalysisState::kCaptured: return "captured";
+        case SceneAnalysisState::kAnalyzing: return "analyzing";
+        case SceneAnalysisState::kCompleted: return "completed";
+        case SceneAnalysisState::kFailed: return "failed";
+        case SceneAnalysisState::kStopped: return "stopped";
+    }
+    return "unknown";
+}
+
+const char* scene_analysis_kind_name(SceneAnalysisKind kind) {
+    switch (kind) {
+        case SceneAnalysisKind::kAutomaticScene: return "automatic_scene";
+        case SceneAnalysisKind::kVisualQuestion: return "visual_question";
+        case SceneAnalysisKind::kVisualFollowUp: return "visual_follow_up";
     }
     return "unknown";
 }
 
 class SceneAnalyzer::Impl {
   public:
+    struct VisualChatTurn {
+        std::string question;
+        std::string answer;
+    };
+
+    struct Task {
+        Frame frame;
+        SceneAnalysisKind kind = SceneAnalysisKind::kAutomaticScene;
+        std::string question;
+        std::deque<VisualChatTurn> history;
+        std::uint64_t session_version = 0;
+    };
+
     ~Impl() {
         release_models();
     }
 
-    void publish(SceneAnalysisState state, const Frame* frame, std::string summary, std::string message,
+    void publish(SceneAnalysisState state, const Task* task, std::string summary, std::string message,
                  std::int64_t latency_ms = 0) {
         std::lock_guard<std::mutex> lock(mutex);
         result.state = state;
-        if (frame != nullptr) {
-            result.source_frame_sequence = frame->sequence;
-            result.captured_at_unix_ms = frame->captured_at_unix_ms;
+        if (task != nullptr) {
+            result.kind = task->kind;
+            result.source_frame_sequence = task->frame.sequence;
+            result.captured_at_unix_ms = task->frame.captured_at_unix_ms;
+            result.user_question = task->question;
         }
         result.latency_ms = latency_ms;
         result.summary = std::move(summary);
@@ -169,13 +190,35 @@ class SceneAnalyzer::Impl {
         vocab = nullptr;
     }
 
-    std::string analyze(const Frame& frame) {
-        if (frame.bgr_image.empty()) {
+    std::string build_prompt(const Task& task) const {
+        std::ostringstream prompt;
+        prompt << "<|turn>system\n"
+               << "You are a visual assistant. Answer in concise Chinese using only evidence visible in the image. "
+               << "Do not show reasoning or analysis. The current image is authoritative for every answer; "
+               << "previous dialogue is only weak context and must be ignored if it conflicts with the image.\n"
+               << "<turn|>\n<|turn>user\n" << mtmd_default_marker();
+        if (task.kind == SceneAnalysisKind::kAutomaticScene) {
+            prompt << "Describe the main objects and scene in this image.";
+        } else {
+            if (!task.history.empty()) {
+                prompt << "Previous visual dialogue:\n";
+                for (const VisualChatTurn& turn : task.history) {
+                    prompt << "User: " << turn.question << "\nAssistant: " << turn.answer << '\n';
+                }
+            }
+            prompt << "User question: " << task.question;
+        }
+        prompt << "\n<turn|>\n<|turn>model\n";
+        return prompt.str();
+    }
+
+    std::string analyze(const Task& task) {
+        if (task.frame.bgr_image.empty()) {
             throw std::runtime_error("captured frame is empty");
         }
 
         cv::Mat rgb;
-        cv::cvtColor(frame.bgr_image, rgb, cv::COLOR_BGR2RGB);
+        cv::cvtColor(task.frame.bgr_image, rgb, cv::COLOR_BGR2RGB);
         if (!rgb.isContinuous()) {
             rgb = rgb.clone();
         }
@@ -185,13 +228,7 @@ class SceneAnalyzer::Impl {
             throw std::runtime_error("unable to create the image input");
         }
 
-        const std::string prompt =
-            "<|turn>system\n"
-            "You are a visual assistant. Reply only with one short factual sentence in Chinese. "
-            "Do not show reasoning or analysis.\n"
-            "<turn|>\n<|turn>user\n" +
-            std::string(mtmd_default_marker()) +
-            "Describe the main objects and scene in this image.\n<turn|>\n<|turn>model\n";
+        const std::string prompt = build_prompt(task);
         const mtmd_input_text input{prompt.c_str(), true, true};
         mtmd::input_chunks chunks(mtmd_input_chunks_init());
         if (!chunks.ptr) {
@@ -219,7 +256,7 @@ class SceneAnalyzer::Impl {
 
         std::string response;
         for (int index = 0; index < config.max_generation_tokens; ++index) {
-            const llama_token token = llama_sampler_sample(sampler, context, -1);
+            llama_token token = llama_sampler_sample(sampler, context, -1);
             if (llama_vocab_is_eog(vocab, token)) {
                 break;
             }
@@ -229,7 +266,7 @@ class SceneAnalyzer::Impl {
                 response.append(piece, static_cast<std::size_t>(length));
             }
             llama_sampler_accept(sampler, token);
-            const llama_batch batch = llama_batch_get_one(const_cast<llama_token*>(&token), 1);
+            const llama_batch batch = llama_batch_get_one(&token, 1);
             if (llama_decode(context, batch) != 0) {
                 llama_sampler_free(sampler);
                 throw std::runtime_error("unable to decode VLM output token");
@@ -238,7 +275,8 @@ class SceneAnalyzer::Impl {
         }
         llama_sampler_free(sampler);
 
-        response = truncate_utf8(strip_control_tokens(std::move(response)), 42);
+        const std::size_t limit = task.kind == SceneAnalysisKind::kAutomaticScene ? 42 : 96;
+        response = truncate_utf8(strip_control_tokens(std::move(response)), limit);
         if (response.empty()) {
             throw std::runtime_error("VLM returned an empty response");
         }
@@ -248,7 +286,10 @@ class SceneAnalyzer::Impl {
     void worker_loop() {
         try {
             initialize_models();
-            initialized = true;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                initialized = true;
+            }
             publish(SceneAnalysisState::kWaiting, nullptr, {}, "ready");
         } catch (const std::exception& exception) {
             release_models();
@@ -257,34 +298,191 @@ class SceneAnalyzer::Impl {
         }
 
         while (true) {
-            Frame frame;
+            Task task;
             {
                 std::unique_lock<std::mutex> lock(mutex);
-                work_available.wait(lock, [this] { return stopping || pending_frame.has_value(); });
+                work_available.wait(lock, [this] { return stopping || pending_task.has_value(); });
                 if (stopping) {
                     return;
                 }
-                frame = std::move(*pending_frame);
-                pending_frame.reset();
+                task = std::move(*pending_task);
+                pending_task.reset();
                 result.state = SceneAnalysisState::kAnalyzing;
+                result.kind = task.kind;
+                result.source_frame_sequence = task.frame.sequence;
+                result.captured_at_unix_ms = task.frame.captured_at_unix_ms;
+                result.user_question = task.question;
+                result.latency_ms = 0;
+                result.summary.clear();
+                result.message = "analyzing";
             }
 
             const auto started_at = std::chrono::steady_clock::now();
             try {
-                const std::string summary = analyze(frame);
+                const std::string summary = analyze(task);
                 const auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            std::chrono::steady_clock::now() - started_at)
-                                            .count();
-                publish(SceneAnalysisState::kCompleted, &frame, summary, {}, latency_ms);
-                std::cout << "[VLM] 场景分析完成（" << latency_ms << " ms）：" << summary << '\n';
+                                            std::chrono::steady_clock::now() - started_at).count();
+                bool publish_result = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    publish_result = task.session_version == visual_session_version;
+                    if (task.kind != SceneAnalysisKind::kAutomaticScene && publish_result) {
+                        visual_history.push_back({task.question, summary});
+                        while (visual_history.size() > 2) {
+                            visual_history.pop_front();
+                        }
+                    }
+                }
+                if (publish_result) {
+                    publish(SceneAnalysisState::kCompleted, &task, summary, {}, latency_ms);
+                    std::cout << "[VLM] " << scene_analysis_kind_name(task.kind) << " completed (" << latency_ms
+                              << " ms): " << summary << '\n';
+                } else {
+                    std::cout << "[VLM] discarded stale visual result for a replaced snapshot\n";
+                }
             } catch (const std::exception& exception) {
                 const auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            std::chrono::steady_clock::now() - started_at)
-                                            .count();
-                publish(SceneAnalysisState::kFailed, &frame, {}, exception.what(), latency_ms);
-                std::cerr << "[VLM] 场景分析失败：" << exception.what() << '\n';
+                                            std::chrono::steady_clock::now() - started_at).count();
+                bool publish_result = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    publish_result = task.session_version == visual_session_version;
+                }
+                if (publish_result) {
+                    publish(SceneAnalysisState::kFailed, &task, {}, exception.what(), latency_ms);
+                    std::cerr << "[VLM] " << scene_analysis_kind_name(task.kind)
+                              << " failed: " << exception.what() << '\n';
+                } else {
+                    std::cerr << "[VLM] discarded stale visual failure for a replaced snapshot\n";
+                }
             }
         }
+    }
+
+    bool submit_automatic(const Frame& frame) {
+        if (frame.bgr_image.empty()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running || !initialized || pending_task.has_value() ||
+                result.state == SceneAnalysisState::kCaptured || result.state == SceneAnalysisState::kAnalyzing) {
+                return false;
+            }
+            Task task;
+            task.frame = clone_frame(frame);
+            task.session_version = visual_session_version;
+            latest_scene_snapshot = clone_frame(frame);
+            pending_task = std::move(task);
+            result.state = SceneAnalysisState::kCaptured;
+            result.kind = SceneAnalysisKind::kAutomaticScene;
+            result.source_frame_sequence = frame.sequence;
+            result.captured_at_unix_ms = frame.captured_at_unix_ms;
+            result.user_question.clear();
+            result.latency_ms = 0;
+            result.summary.clear();
+            result.message = "automatic frame captured";
+        }
+        work_available.notify_one();
+        return true;
+    }
+
+    bool submit_new_visual_question(const Frame& frame, const std::string& question) {
+        if (frame.bgr_image.empty() || trim(question).empty()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running || !initialized ||
+                (result.state == SceneAnalysisState::kAnalyzing &&
+                 result.kind != SceneAnalysisKind::kAutomaticScene) ||
+                (pending_task.has_value() && pending_task->kind != SceneAnalysisKind::kAutomaticScene)) {
+                return false;
+            }
+            ++visual_session_version;
+            active_snapshot = clone_frame(frame);
+            visual_history.clear();
+            Task task;
+            task.frame = clone_frame(*active_snapshot);
+            task.kind = SceneAnalysisKind::kVisualQuestion;
+            task.question = trim(question);
+            task.session_version = visual_session_version;
+            pending_task = std::move(task);
+            result.state = SceneAnalysisState::kCaptured;
+            result.kind = SceneAnalysisKind::kVisualQuestion;
+            result.source_frame_sequence = frame.sequence;
+            result.captured_at_unix_ms = frame.captured_at_unix_ms;
+            result.user_question = question;
+            result.latency_ms = 0;
+            result.summary.clear();
+            result.message = "visual question captured";
+        }
+        work_available.notify_one();
+        return true;
+    }
+
+    bool select_visual_snapshot(const Frame& frame) {
+        if (frame.bgr_image.empty()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running || !initialized) {
+                return false;
+            }
+            ++visual_session_version;
+            active_snapshot = clone_frame(frame);
+            latest_scene_snapshot = clone_frame(frame);
+            visual_history.clear();
+            result.state = SceneAnalysisState::kWaiting;
+            result.kind = SceneAnalysisKind::kAutomaticScene;
+            result.source_frame_sequence = frame.sequence;
+            result.captured_at_unix_ms = frame.captured_at_unix_ms;
+            result.user_question.clear();
+            result.latency_ms = 0;
+            result.summary.clear();
+            result.message = "visual snapshot selected";
+        }
+        return true;
+    }
+
+    bool submit_visual_follow_up(const std::string& question) {
+        if (trim(question).empty()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running || !initialized || pending_task.has_value() ||
+                result.state == SceneAnalysisState::kCaptured || result.state == SceneAnalysisState::kAnalyzing) {
+                return false;
+            }
+            if (!active_snapshot.has_value()) {
+                if (!latest_scene_snapshot.has_value()) {
+                    return false;
+                }
+                ++visual_session_version;
+                active_snapshot = clone_frame(*latest_scene_snapshot);
+                visual_history.clear();
+            }
+            Task task;
+            task.frame = clone_frame(*active_snapshot);
+            task.kind = visual_history.empty() ? SceneAnalysisKind::kVisualQuestion
+                                                : SceneAnalysisKind::kVisualFollowUp;
+            task.question = trim(question);
+            task.history = visual_history;
+            task.session_version = visual_session_version;
+            pending_task = std::move(task);
+            result.state = SceneAnalysisState::kCaptured;
+            result.kind = pending_task->kind;
+            result.source_frame_sequence = pending_task->frame.sequence;
+            result.captured_at_unix_ms = pending_task->frame.captured_at_unix_ms;
+            result.user_question = pending_task->question;
+            result.latency_ms = 0;
+            result.summary.clear();
+            result.message = "visual follow-up queued";
+        }
+        work_available.notify_one();
+        return true;
     }
 
     SceneAnalyzerConfig config;
@@ -294,7 +492,11 @@ class SceneAnalyzer::Impl {
     bool running = false;
     bool stopping = false;
     bool initialized = false;
-    std::optional<Frame> pending_frame;
+    std::optional<Task> pending_task;
+    std::optional<Frame> active_snapshot;
+    std::optional<Frame> latest_scene_snapshot;
+    std::deque<VisualChatTurn> visual_history;
+    std::uint64_t visual_session_version = 0;
     SceneAnalysisResult result;
     llama_model* model = nullptr;
     llama_context* context = nullptr;
@@ -329,7 +531,11 @@ bool SceneAnalyzer::start(const SceneAnalyzerConfig& config, std::string* error_
         impl_->stopping = false;
         impl_->running = true;
         impl_->initialized = false;
-        impl_->pending_frame.reset();
+        impl_->pending_task.reset();
+        impl_->active_snapshot.reset();
+        impl_->latest_scene_snapshot.reset();
+        impl_->visual_history.clear();
+        ++impl_->visual_session_version;
         impl_->result = {};
         impl_->result.state = SceneAnalysisState::kLoading;
         impl_->result.message = "loading Gemma and mmproj";
@@ -339,27 +545,32 @@ bool SceneAnalyzer::start(const SceneAnalyzerConfig& config, std::string* error_
 }
 
 bool SceneAnalyzer::submit(const Frame& frame) {
-    if (frame.bgr_image.empty()) {
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->running || !impl_->initialized || impl_->pending_frame.has_value() ||
-            impl_->result.state == SceneAnalysisState::kCaptured ||
-            impl_->result.state == SceneAnalysisState::kAnalyzing) {
-            return false;
-        }
-        impl_->pending_frame = frame;
-        impl_->pending_frame->bgr_image = frame.bgr_image.clone();
-        impl_->result.state = SceneAnalysisState::kCaptured;
-        impl_->result.source_frame_sequence = frame.sequence;
-        impl_->result.captured_at_unix_ms = frame.captured_at_unix_ms;
-        impl_->result.latency_ms = 0;
-        impl_->result.summary.clear();
-        impl_->result.message = "frame captured";
-    }
-    impl_->work_available.notify_one();
-    return true;
+    return impl_->submit_automatic(frame);
+}
+
+bool SceneAnalyzer::ask_about_frame(const Frame& frame, const std::string& question) {
+    return impl_->submit_new_visual_question(frame, question);
+}
+
+bool SceneAnalyzer::select_visual_snapshot(const Frame& frame) {
+    return impl_->select_visual_snapshot(frame);
+}
+
+bool SceneAnalyzer::ask_follow_up(const std::string& question) {
+    return impl_->submit_visual_follow_up(question);
+}
+
+bool SceneAnalyzer::has_active_snapshot() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->active_snapshot.has_value() || impl_->latest_scene_snapshot.has_value();
+}
+
+void SceneAnalyzer::clear_visual_session() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->active_snapshot.reset();
+    impl_->latest_scene_snapshot.reset();
+    impl_->visual_history.clear();
+    ++impl_->visual_session_version;
 }
 
 SceneAnalysisResult SceneAnalyzer::latest_result() const {
@@ -381,6 +592,7 @@ void SceneAnalyzer::stop() {
         }
         impl_->stopping = true;
         impl_->running = false;
+        impl_->pending_task.reset();
     }
     impl_->work_available.notify_all();
     if (impl_->worker.joinable()) {
