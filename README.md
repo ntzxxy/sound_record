@@ -144,6 +144,42 @@ QWEN3_TTS_BACKEND=cuda ./run_server.sh
 
 ## 构建
 
+### P0：Jetson 单机语音运行时（新增）
+
+`cockpit_runtime` 是面向 Jetson 的单进程运行时。它不建立音频 TCP
+连接：ALSA 采集线程将 PCM 放入进程内有界队列，随后依次交给 ASR、
+`ConversationRuntime`、TTS 和本地 ALSA 播放。`server/`、`libnet/` 和
+旧 AIV1 协议仍完整保留，便于继续运行旧的 PC/开发板演示，但不参与该目标的
+实际音频传输。
+
+在具备模型和 ALSA/GPIO 设备的 Linux/Jetson 环境中构建：
+
+```bash
+cmake -S . -B build-jetson -DBUILD_COCKPIT_RUNTIME=ON
+cmake --build build-jetson --target cockpit_runtime -j
+./build-jetson/bin/cockpit_runtime \
+  /opt/models/asr \
+  /opt/models/llm.gguf \
+  /opt/models/tts \
+  usb
+```
+
+P0 暂时只接受 16 kHz、单声道输入；`wm8960` 的现有 44.1 kHz 双声道配置应在
+后续加入重采样后再启用。该运行时通过按键开始/结束录音，开始新一轮录音时会
+打断本地 TTS。
+
+无需模型或声卡也可验证队列链路。该测试生成 100 ms 的假 PCM，验证
+`capture start -> PCM -> fake ASR -> conversation submit`，并检查 TTS 打断：
+
+```bash
+cmake -S . -B cmake-build-p0-test \
+  -DBUILD_ASR=OFF -DBUILD_LLM=OFF -DBUILD_SERVER=OFF \
+  -DBUILD_BOARD_CLIENT=OFF -DBUILD_VISION=OFF \
+  -DBUILD_DESKTOP_CLIENT=OFF -DBUILD_COCKPIT_RUNTIME=OFF
+cmake --build cmake-build-p0-test --target test_local_voice_pipeline -j
+./cmake-build-p0-test/bin/test_local_voice_pipeline
+```
+
 ### PC 服务端
 
 在仓库根目录执行：

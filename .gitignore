@@ -2,6 +2,9 @@ build/
 build-pc/
 server/received_audio/
 docs/
+!/docs/
+docs/*
+!docs/JETSON_ORIN_NX_DEPLOYMENT.md
 PPT/
 *.docx
 *.gguf

@@ -51,6 +51,7 @@ endif()
 if(BUILD_ASSISTANT_RUNTIME)
     add_subdirectory(libassistant)
     add_subdirectory(libconversation)
+    add_subdirectory(libpipeline)
 else()
     message(STATUS ">>>> 未构建助手运行时；可独立构建 Qt 桌面控制客户端 <<<<")
 endif()
@@ -103,6 +104,15 @@ if(BUILD_SERVER AND CMAKE_CROSSCOMPILING)
 endif()
 if(BUILD_ASSISTANT_RUNTIME AND BUILD_SERVER)
     add_subdirectory(server)
+endif()
+
+# P0 Jetson runtime: all voice modules are in one process and communicate
+# through an in-memory bounded queue. server/libnet remain available as the
+# preserved legacy AIV1 path, but are not used by this target.
+option(BUILD_COCKPIT_RUNTIME "Build the single-process local cockpit runtime" ON)
+if(BUILD_COCKPIT_RUNTIME AND BUILD_ASSISTANT_RUNTIME AND TARGET asr AND TARGET llm AND
+   TARGET tts AND TARGET audio_lib AND TARGET net_lib)
+    add_subdirectory(apps/cockpit_runtime)
 endif()
 
 option(BUILD_ASSISTANT_TOOLS "Build assistant context demo and tests" ON)

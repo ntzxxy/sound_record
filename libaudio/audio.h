@@ -1,6 +1,7 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -41,9 +42,26 @@ typedef struct WAV_DATA {
     u_int32_t Subchunk2Size;        /* pcm数据大小 */
 } __attribute__ ((packed)) DATA_t;
 
+// Optional local PCM sink for the single-process cockpit runtime.  Existing
+// board binaries leave this callback unset and continue to use the legacy
+// AIV1/TCP writer path unchanged.
+typedef enum {
+    AUDIO_CAPTURE_STARTED = 1,
+    AUDIO_CAPTURE_PCM = 2,
+    AUDIO_CAPTURE_ENDED = 3,
+} audio_capture_event_t;
+
+typedef void (*audio_capture_callback_t)(audio_capture_event_t event,
+                                         const int16_t *samples,
+                                         size_t sample_count,
+                                         unsigned int sample_rate,
+                                         unsigned int channels,
+                                         void *user_data);
+
 // 初始化和去初始化
 int audio_init(const AudioConfig *cfg);
 void audio_cleanup(void);
+void audio_set_capture_callback(audio_capture_callback_t callback, void *user_data);
 
 // 录音控制接口
 void audio_start_recording(void);

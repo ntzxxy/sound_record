@@ -52,6 +52,9 @@ volatile static int g_file_ready = 0;
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_file_cond = PTHREAD_COND_INITIALIZER;
 static RingBuffer g_rb(256 * 1024);
+static pthread_mutex_t g_capture_callback_mutex = PTHREAD_MUTEX_INITIALIZER;
+static audio_capture_callback_t g_capture_callback = NULL;
+static void *g_capture_callback_user_data = NULL;
 
 struct PlaybackMessage {
     std::vector<int16_t> pcm;
@@ -70,6 +73,33 @@ static int g_playback_rate = 0;
 static int g_playback_channels = 0;
 static uint64_t g_playback_pcm_frames = 0;
 static uint64_t g_playback_pcm_bytes = 0;
+
+void audio_set_capture_callback(audio_capture_callback_t callback, void *user_data) {
+    pthread_mutex_lock(&g_capture_callback_mutex);
+    g_capture_callback = callback;
+    g_capture_callback_user_data = user_data;
+    pthread_mutex_unlock(&g_capture_callback_mutex);
+}
+
+static int capture_callback_is_set(void) {
+    pthread_mutex_lock(&g_capture_callback_mutex);
+    const int enabled = g_capture_callback != NULL;
+    pthread_mutex_unlock(&g_capture_callback_mutex);
+    return enabled;
+}
+
+static void emit_capture_event(audio_capture_event_t event, const int16_t *samples,
+                               size_t sample_count) {
+    // Callback execution is intentionally serialized with registration. The
+    // cockpit callback only enqueues data, therefore it never blocks ALSA on
+    // inference and cannot re-enter this audio module.
+    pthread_mutex_lock(&g_capture_callback_mutex);
+    if (g_capture_callback != NULL) {
+        g_capture_callback(event, samples, sample_count, rate, channel,
+                           g_capture_callback_user_data);
+    }
+    pthread_mutex_unlock(&g_capture_callback_mutex);
+}
 
 static ssize_t recv_all_local(int fd, uint8_t *buf, size_t size) {
     size_t got = 0;
@@ -315,6 +345,57 @@ void* record_worker(void* arg) {
 void* writer_worker(void* arg)
 {
 #ifdef STREAMING_MODE
+    // P0 local runtime path. Keep the old TCP implementation below intact for
+    // the existing out/server demo; selecting this callback guarantees that no
+    // socket is opened and PCM remains in the current process.
+    if (capture_callback_is_set()) {
+        const uint32_t frame_bytes = rate * channel / 5; // 100 ms, S16_LE
+        std::vector<uint8_t> out_buf(frame_bytes);
+        bool was_recording = false;
+
+        while (1) {
+            if (g_record_run) {
+                if (!was_recording) {
+                    was_recording = true;
+                    g_rb.reset();
+                    emit_capture_event(AUDIO_CAPTURE_STARTED, NULL, 0);
+                    printf("[Audio-Local] capture started\n");
+                }
+                if (g_rb.availableData() >= frame_bytes) {
+                    const size_t read_bytes = g_rb.read(out_buf.data(), frame_bytes);
+                    if (read_bytes == frame_bytes) {
+                        emit_capture_event(AUDIO_CAPTURE_PCM,
+                                           reinterpret_cast<const int16_t *>(out_buf.data()),
+                                           read_bytes / sizeof(int16_t));
+                    }
+                } else {
+                    usleep(10000);
+                }
+            } else if (was_recording) {
+                was_recording = false;
+                // Let the capture thread finish an in-flight ALSA read, then
+                // drain all remaining samples before the turn boundary.
+                usleep(50000);
+                while (g_rb.availableData() > 0) {
+                    size_t bytes = g_rb.availableData();
+                    if (bytes > frame_bytes) bytes = frame_bytes;
+                    const size_t read_bytes = g_rb.read(out_buf.data(), bytes);
+                    if (read_bytes > 0) {
+                        emit_capture_event(AUDIO_CAPTURE_PCM,
+                                           reinterpret_cast<const int16_t *>(out_buf.data()),
+                                           read_bytes / sizeof(int16_t));
+                    }
+                }
+                emit_capture_event(AUDIO_CAPTURE_ENDED, NULL, 0);
+                g_rb.reset();
+                audio_set_file_ready();
+                printf("[Audio-Local] capture ended\n");
+            } else {
+                usleep(10000);
+            }
+        }
+    }
+
     /* ==========================================
      * 流实时传输模式 (STREAMING)
      * ========================================== */
