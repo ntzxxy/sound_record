@@ -56,6 +56,7 @@ static bool is_kokoro_model_dir(const std::string& base) {
            file_exists(base + "/tokens.txt") &&
            file_exists(base + "/lexicon-us-en.txt") &&
            file_exists(base + "/lexicon-zh.txt") &&
+           file_exists(base + "/dict") &&
            file_exists(base + "/date-zh.fst") &&
            file_exists(base + "/number-zh.fst") &&
            file_exists(base + "/phone-zh.fst");
@@ -184,32 +185,26 @@ int tts_init(const char *model_dir) {
     config.model.provider    = "cpu";
     config.max_num_sentences = 1;  // 按句/chunk 回调，便于边合成边播放
 
-    // Detect Kokoro, Supertonic, or VITS/Matcha.
+    // P0 uses the Kokoro INT8 Chinese-English model.  The vendored
+    // sherpa-onnx revision also supports the legacy VITS configuration below,
+    // but it does not expose the newer Supertonic API.
     if (is_kokoro_model_dir(base)) {
         config.model.kokoro.model = base + "/model.int8.onnx";
         config.model.kokoro.voices = base + "/voices.bin";
         config.model.kokoro.tokens = base + "/tokens.txt";
         config.model.kokoro.lexicon = base + "/lexicon-us-en.txt," + base + "/lexicon-zh.txt";
         config.model.kokoro.data_dir = base + "/espeak-ng-data";
+        config.model.kokoro.dict_dir = base + "/dict";
         config.rule_fsts = base + "/date-zh.fst," + base + "/number-zh.fst," + base + "/phone-zh.fst";
         g_use_kokoro = true;
         fprintf(stderr, "[TTS] detected Kokoro INT8 Chinese-English model\n");
-    } else if (file_exists(base + "/tts.json")) {
-        config.model.supertonic.duration_predictor = base + "/duration_predictor.int8.onnx";
-        config.model.supertonic.text_encoder       = base + "/text_encoder.int8.onnx";
-        config.model.supertonic.vector_estimator   = base + "/vector_estimator.int8.onnx";
-        config.model.supertonic.vocoder            = base + "/vocoder.int8.onnx";
-        config.model.supertonic.tts_json           = base + "/tts.json";
-        config.model.supertonic.unicode_indexer    = base + "/unicode_indexer.bin";
-        config.model.supertonic.voice_style        = base + "/voice.bin";
-        fprintf(stderr, "[TTS] 检测到 Supertonic 模型\n");
     } else {
         // 优先用 INT8 模型（52MB，3x 快），否则用 FP32（163MB）
         std::string model  = base + "/model.int8.onnx";
         if (!file_exists(model)) model = base + "/model.onnx";
         std::string tokens = base + "/tokens.txt";
         if (!file_exists(model) || !file_exists(tokens)) {
-            fprintf(stderr, "[TTS] 未找到 model.onnx/tokens.txt 或 tts.json\n");
+            fprintf(stderr, "[TTS] 未找到 Kokoro 或 VITS 模型文件\n");
             return -1;
         }
         config.model.vits.model  = model;
@@ -251,17 +246,17 @@ int tts_speak(const char *text, tts_callback_t callback) {
     g_user_callback = callback;
     g_had_audio = false;
     try {
-        sherpa_onnx::GenerationConfig gen_cfg;
+        int64_t speaker_id = 0;
+        float speed = 1.0f;
         if (g_use_kokoro) {
             const char *speaker_env = std::getenv("KOKORO_SPEAKER_ID");
             const char *speed_env = std::getenv("KOKORO_SPEED");
-            gen_cfg.sid = (speaker_env && speaker_env[0]) ? std::atoi(speaker_env) : 50;
-            gen_cfg.speed = (speed_env && speed_env[0]) ? static_cast<float>(std::atof(speed_env)) : 1.10f;
-            gen_cfg.silence_scale = 0.2f;
-        } else {
-            gen_cfg.extra["lang"] = "zh";
+            speaker_id = (speaker_env && speaker_env[0]) ? std::atoi(speaker_env) : 50;
+            speed = (speed_env && speed_env[0]) ? static_cast<float>(std::atof(speed_env)) : 1.10f;
         }
-        g_tts->Generate(std::string(text), gen_cfg, bridge_callback);
+        // The pinned sherpa-onnx version used on Jetson provides this
+        // signature.  It is sufficient for Kokoro speaker and speed control.
+        g_tts->Generate(std::string(text), speaker_id, speed, bridge_callback);
     } catch (const std::exception &e) {
         fprintf(stderr, "[TTS] 合成失败: %s\n", e.what());
         g_user_callback = nullptr;
