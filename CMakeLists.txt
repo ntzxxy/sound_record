@@ -115,6 +115,14 @@ if(BUILD_COCKPIT_RUNTIME AND BUILD_ASSISTANT_RUNTIME AND TARGET asr AND TARGET l
     add_subdirectory(apps/cockpit_runtime)
 endif()
 
+# Board-side Qt HMI. Unlike desktop_client, this target calls
+# ConversationRuntime directly and therefore does not depend on the legacy
+# TCP control service.
+option(BUILD_QT_HMI "Build the in-process Qt home HMI" OFF)
+if(BUILD_QT_HMI AND BUILD_ASSISTANT_RUNTIME AND TARGET conversation AND TARGET llm)
+    add_subdirectory(apps/qt_hmi)
+endif()
+
 option(BUILD_ASSISTANT_TOOLS "Build assistant context demo and tests" ON)
 if(BUILD_ASSISTANT_TOOLS AND NOT CMAKE_CROSSCOMPILING AND (BUILD_ASSISTANT_RUNTIME OR BUILD_VISION))
     add_subdirectory(tools)
