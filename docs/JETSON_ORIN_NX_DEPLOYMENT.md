@@ -79,12 +79,11 @@ sudo reboot
 ## 2. Clone 项目及子模块
 
 ```bash
-mkdir -p ~/workspace
-cd ~/workspace
+cd ~/xuyi
 
-git clone --recurse-submodules <repository-url> sound_record
+git clone --branch edge --single-branch --recurse-submodules \
+  https://github.com/ntzxxy/sound_record.git
 cd sound_record
-git submodule update --init --recursive
 ```
 
 检查 P0 运行时源文件已经存在：
