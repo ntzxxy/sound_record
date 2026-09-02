@@ -475,6 +475,7 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     IntentResult intent = analyzed_intent;
     ServiceResult result;
     result.task_type = intent.intent;
+    result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
     if (looksLikeDeviceControlText(user_input) && inferred_command) {

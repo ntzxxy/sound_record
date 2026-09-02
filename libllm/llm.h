@@ -1,6 +1,8 @@
 #ifndef LLM_H
 #define LLM_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +25,18 @@ typedef struct {
     float temperature;
 } llm_once_params_t;
 
+/** 最近一次 llm_chat 调用的可复核性能指标。 */
+typedef struct {
+    int valid;
+    int prompt_tokens;
+    int output_tokens;
+    int64_t ttft_ms;
+    int64_t prompt_decode_ms;
+    int64_t decode_ms;
+    double tokens_per_s;
+    int truncated;
+} llm_generation_metrics_t;
+
 /**
  * 初始化 LLM 引擎（加载模型）
  * @param model_path  GGUF 模型文件路径
@@ -38,6 +52,9 @@ int llm_init(const char *model_path);
  * @return 0 成功，-1 失败
  */
 int llm_chat(const char *prompt, llm_callback_t callback);
+
+/** 获取最近一次 llm_chat 的性能指标；未发生成功生成时返回 0。 */
+int llm_get_last_chat_metrics(llm_generation_metrics_t *metrics);
 
 /**
  * 无状态短文本生成，用于意图分类等不应污染聊天历史的任务。

@@ -112,6 +112,9 @@ struct RequestAnalysis {
 
 struct ServiceResult {
     IntentType task_type{IntentType::GeneralChat};
+    // Carried from IntentResult for UI/benchmark observability. It does not
+    // participate in routing or alter the selected task.
+    int intent_latency_ms{0};
     bool call_llm{true};
     std::string runtime_context;
     std::string fixed_reply;

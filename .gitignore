@@ -26,6 +26,10 @@ models/supertonic-tts/
 models/vits-tts-zh/
 *.spk
 
+# Local Qt HMI state and benchmark captures. These contain interaction text,
+# process samples and device telemetry, so they must remain local.
+/runtime/
+
 # 摄像头运行时产生的截图和后续本地视觉记录可能包含隐私画面，不提交到仓库。
 /vision_records/
 

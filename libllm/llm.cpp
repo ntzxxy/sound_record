@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,8 @@ static llama_context *g_intent_ctx = nullptr;
 static const llama_vocab *g_vocab  = nullptr;
 static llama_sampler *g_smpl   = nullptr;
 static bool g_is_gemma4 = false;
+static std::mutex g_metrics_mutex;
+static llm_generation_metrics_t g_last_chat_metrics{};
 
 // 语音场景只需要一句可播报的答复；限制输出长度可减少生成时间和无效续写。
 static int g_n_predict = 128;
@@ -180,6 +183,11 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
         return -1;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_metrics_mutex);
+        g_last_chat_metrics = {};
+    }
+
     long long total_begin_ms = now_ms();
 
     // 1. Tokenize 输入
@@ -238,12 +246,32 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
     long long prompt_decode_ms = generation_begin_ms - prompt_decode_begin_ms;
     long long decode_ms = end_ms - generation_begin_ms;
     double tokens_per_s = decode_ms > 0 ? generated_tokens * 1000.0 / decode_ms : 0.0;
+    {
+        std::lock_guard<std::mutex> lock(g_metrics_mutex);
+        g_last_chat_metrics = {
+            1,
+            n_prompt,
+            generated_tokens,
+            ttft_ms,
+            prompt_decode_ms,
+            decode_ms,
+            tokens_per_s,
+            eog_reached ? 0 : 1,
+        };
+    }
     fprintf(stderr,
             "[METRIC] llm prompt_tokens=%d output_tokens=%d ttft_ms=%lld prompt_decode_ms=%lld decode_ms=%lld tokens_per_s=%.2f truncated=%d\n",
             n_prompt, generated_tokens, ttft_ms, prompt_decode_ms, decode_ms,
             tokens_per_s, eog_reached ? 0 : 1);
     // 返回 1 表示被 token 上限截断（未到 EOS）
     return eog_reached ? 0 : 1;
+}
+
+int llm_get_last_chat_metrics(llm_generation_metrics_t *metrics) {
+    if (!metrics) return 0;
+    std::lock_guard<std::mutex> lock(g_metrics_mutex);
+    *metrics = g_last_chat_metrics;
+    return metrics->valid;
 }
 
 int llm_generate_once(const char *system_prompt,

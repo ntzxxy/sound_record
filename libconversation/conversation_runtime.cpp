@@ -2,6 +2,7 @@
 
 #include "assistant_service.h"
 #include "chat_agent.h"
+#include "llm.h"
 
 #include <chrono>
 #include <iostream>
@@ -141,9 +142,11 @@ void ConversationRuntime::workerLoop() {
               request.request_id, request.text, "", "", request.enable_tts, false});
 
         assistant::ServiceResult result = assistant_service_->process(request.text);
-        emit({EventType::IntentResult, request.source, request.turn_id,
-              request.request_id, "", "", assistant::toString(result.task_type),
-              request.enable_tts, false});
+        ConversationEvent intent_event{EventType::IntentResult, request.source, request.turn_id,
+                                       request.request_id, "", "", assistant::toString(result.task_type),
+                                       request.enable_tts, false};
+        intent_event.intent_latency_ms = result.intent_latency_ms;
+        emit(std::move(intent_event));
         if (!result.tool_result_json.empty()) {
             emit({EventType::ToolResult, request.source, request.turn_id,
                   request.request_id, result.tool_result_json, result.tool_name,
@@ -156,8 +159,10 @@ void ConversationRuntime::workerLoop() {
                       request.request_id, result.fixed_reply, "", "",
                       request.enable_tts, false});
             }
-            emit({EventType::ReplyFinal, request.source, request.turn_id,
-                  request.request_id, "", "", "", request.enable_tts, true});
+            ConversationEvent final_event{EventType::ReplyFinal, request.source, request.turn_id,
+                                          request.request_id, "", "", "", request.enable_tts, true};
+            final_event.intent_latency_ms = result.intent_latency_ms;
+            emit(std::move(final_event));
             continue;
         }
 
@@ -168,11 +173,31 @@ void ConversationRuntime::workerLoop() {
                                                 &ConversationRuntime::agentCallback);
         callback_request_ = nullptr;
         callback_runtime_ = nullptr;
-        if (ret != 0) {
+        // llm_chat returns 1 when generation reaches the configured token
+        // limit. The streamed text and its metrics are still valid, so only a
+        // negative return value is an execution failure.
+        if (ret < 0) {
             emit({EventType::Error, request.source, request.turn_id,
                   request.request_id, "对话模型处理失败", "", "",
                   request.enable_tts, true});
+            continue;
         }
+
+        llm_generation_metrics_t metrics{};
+        ConversationEvent final_event{EventType::ReplyFinal, request.source, request.turn_id,
+                                      request.request_id, "", "", "", request.enable_tts, true};
+        final_event.intent_latency_ms = result.intent_latency_ms;
+        if (llm_get_last_chat_metrics(&metrics) != 0) {
+            final_event.prompt_tokens = metrics.prompt_tokens;
+            final_event.output_tokens = metrics.output_tokens;
+            final_event.llm_ttft_ms = metrics.ttft_ms;
+            final_event.llm_prompt_decode_ms = metrics.prompt_decode_ms;
+            final_event.llm_decode_ms = metrics.decode_ms;
+            final_event.llm_tokens_per_s = metrics.tokens_per_s;
+            final_event.llm_truncated = metrics.truncated != 0;
+            final_event.has_llm_metrics = true;
+        }
+        emit(std::move(final_event));
     }
 }
 
@@ -185,10 +210,9 @@ void ConversationRuntime::agentCallback(const char* text, int is_final) {
         runtime->emit({EventType::ReplyDelta, request->source, request->turn_id,
                        request->request_id, text, "", "", request->enable_tts, false});
     }
-    if (is_final) {
-        runtime->emit({EventType::ReplyFinal, request->source, request->turn_id,
-                       request->request_id, "", "", "", request->enable_tts, true});
-    }
+    // ReplyFinal is emitted by workerLoop after llm_chat returns so it can
+    // carry the completed per-turn generation metrics.
+    (void) is_final;
 }
 
 }  // namespace conversation
