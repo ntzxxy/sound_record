@@ -25,6 +25,14 @@ static llm_generation_metrics_t g_last_chat_metrics{};
 static int g_n_predict = 128;
 static int g_total_tokens = 0;  // 追踪上下文中的 token 总数
 
+// Orin NX 16 GB can accommodate an 8K chat KV cache for this Q4 model.  The
+// batch size is deliberately smaller than the context: prefill is chunked so
+// long history rebuilds never exceed llama.cpp's per-decode batch limit.
+static constexpr int kChatContextTokens = 8192;
+static constexpr int kChatBatchTokens = 1024;
+static constexpr int kIntentContextTokens = 4096;
+static constexpr int kIntentBatchTokens = 4096;
+
 // ======================================================================
 
 static long long now_ms() {
@@ -42,6 +50,24 @@ static int tokenize_text(const std::string& text, std::vector<llama_token>& toke
         return -1;
     }
     return n;
+}
+
+// llama_batch_get_one() tracks positions automatically for its single sequence.
+// Feeding a prompt in consecutive chunks therefore preserves the same KV cache
+// as a single prefill while keeping every llama_decode() call within n_batch.
+static int decode_tokens_in_batches(llama_context* context,
+                                    std::vector<llama_token>& tokens,
+                                    int batch_limit) {
+    if (!context || tokens.empty() || batch_limit <= 0) return -1;
+
+    for (size_t offset = 0; offset < tokens.size();) {
+        const int count = static_cast<int>(std::min(
+            tokens.size() - offset, static_cast<size_t>(batch_limit)));
+        llama_batch batch = llama_batch_get_one(tokens.data() + offset, count);
+        if (llama_decode(context, batch)) return -1;
+        offset += static_cast<size_t>(count);
+    }
+    return 0;
 }
 
 static int format_prompt_internal(const char *system_prompt, const char *user_message,
@@ -132,9 +158,9 @@ int llm_init(const char *model_path) {
     // 3. 创建上下文
     llama_context_params ctx_params = llama_context_default_params();
     // Gemma 4 虽支持 128K 上下文，但 KV 缓存随窗口线性占用显存。
-    // 4096 在当前 6 GB GPU 上可覆盖多轮语音对话，同时避免长输入挤占生成空间。
-    ctx_params.n_ctx   = 4096;
-    ctx_params.n_batch = 512;
+    // Orin NX 16 GB 使用 8K 聊天窗口；长 prompt 会按 1024 tokens 分块 prefill。
+    ctx_params.n_ctx   = kChatContextTokens;
+    ctx_params.n_batch = kChatBatchTokens;
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -147,8 +173,8 @@ int llm_init(const char *model_path) {
     llama_context_params intent_params = llama_context_default_params();
     // 意图提示词本身包含 JSON 约束和示例，1536 tokens 会使长用户输入
     // 没有足够空间输出完整 JSON，继而错误回退为 CLARIFY。
-    intent_params.n_ctx = 4096;
-    intent_params.n_batch = 4096;
+    intent_params.n_ctx = kIntentContextTokens;
+    intent_params.n_batch = kIntentBatchTokens;
     g_intent_ctx = llama_init_from_model(g_model, intent_params);
     if (!g_intent_ctx) {
         fprintf(stderr, "[LLM] 意图分类上下文创建失败\n");
@@ -195,11 +221,15 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
     std::vector<llama_token> prompt_tokens;
     int n_prompt = tokenize_text(prompt_str, prompt_tokens);
     if (n_prompt <= 0) return -1;
+    if (g_total_tokens + n_prompt > kChatContextTokens) {
+        fprintf(stderr, "[LLM] 聊天上下文超出 %d tokens，需重建或裁剪历史\n",
+                kChatContextTokens);
+        return -1;
+    }
 
     // 2. 处理 prompt
     long long prompt_decode_begin_ms = now_ms();
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), n_prompt);
-    if (llama_decode(g_ctx, batch)) {
+    if (decode_tokens_in_batches(g_ctx, prompt_tokens, kChatBatchTokens)) {
         return -1;
     }
     long long generation_begin_ms = now_ms();
@@ -213,6 +243,7 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
     int generated_tokens = 0;
     int i;
     for (i = 0; i < g_n_predict; i++) {
+        if (g_total_tokens >= kChatContextTokens) break;
         new_token_id = llama_sampler_sample(g_smpl, g_ctx, -1);
 
         if (llama_vocab_is_eog(g_vocab, new_token_id)) {
@@ -232,7 +263,7 @@ int llm_chat(const char *prompt, llm_callback_t callback) {
             callback(text.c_str(), 0);
         }
 
-        batch = llama_batch_get_one(&new_token_id, 1);
+        llama_batch batch = llama_batch_get_one(&new_token_id, 1);
         if (llama_decode(g_ctx, batch)) {
             break;
         }
@@ -300,9 +331,12 @@ int llm_generate_once(const char *system_prompt,
     std::vector<llama_token> prompt_tokens;
     int n_prompt = tokenize_text(std::string(prompt_buf, len), prompt_tokens);
     if (n_prompt <= 0) return -1;
+    if (n_prompt > kIntentContextTokens) {
+        fprintf(stderr, "[LLM] 意图提示词超出 %d tokens\n", kIntentContextTokens);
+        return -1;
+    }
 
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), n_prompt);
-    if (llama_decode(g_intent_ctx, batch)) return -1;
+    if (decode_tokens_in_batches(g_intent_ctx, prompt_tokens, kIntentBatchTokens)) return -1;
 
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler *sampler = llama_sampler_chain_init(sparams);
@@ -318,6 +352,7 @@ int llm_generate_once(const char *system_prompt,
     int written = 0;
     bool eog_reached = false;
     for (int i = 0; i < max_tokens; ++i) {
+        if (n_prompt + i >= kIntentContextTokens) break;
         llama_token token = llama_sampler_sample(sampler, g_intent_ctx, -1);
         if (llama_vocab_is_eog(g_vocab, token)) {
             eog_reached = true;
@@ -333,7 +368,7 @@ int llm_generate_once(const char *system_prompt,
             output[written] = '\0';
         }
 
-        batch = llama_batch_get_one(&token, 1);
+        llama_batch batch = llama_batch_get_one(&token, 1);
         if (llama_decode(g_intent_ctx, batch)) break;
     }
 
@@ -352,8 +387,12 @@ int llm_append_text(const char *text) {
     int n = tokenize_text(s, tokens);
     if (n <= 0) return -1;
 
-    llama_batch batch = llama_batch_get_one(tokens.data(), n);
-    if (llama_decode(g_ctx, batch)) return -1;
+    if (g_total_tokens + n > kChatContextTokens) {
+        fprintf(stderr, "[LLM] 历史重建超出 %d tokens，拒绝写入 KV cache\n",
+                kChatContextTokens);
+        return -1;
+    }
+    if (decode_tokens_in_batches(g_ctx, tokens, kChatBatchTokens)) return -1;
     g_total_tokens += n;
     return 0;
 }

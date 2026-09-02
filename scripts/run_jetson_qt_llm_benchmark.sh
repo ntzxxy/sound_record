@@ -4,14 +4,15 @@
 # 1 Hz device/process resource samples in one self-contained session folder.
 set -euo pipefail
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Usage: $0 <qt_hmi_binary> <model.gguf> [benchmark_root]" >&2
+if [[ $# -gt 3 ]]; then
+    echo "Usage: $0 [qt_hmi_binary] [model.gguf] [benchmark_root]" >&2
     exit 2
 fi
 
-project_root=$(cd "$(dirname "$0")/.." && pwd)
-binary=$1
-model=$2
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+project_root=$(cd "$script_dir/.." && pwd)
+binary=${1:-"$project_root/build-jetson-qt-gpu/bin/qt_hmi"}
+model=${2:-"$project_root/models/gemma-4-E4B-it-Q4_0.gguf"}
 benchmark_root=${3:-"$project_root/runtime/benchmarks"}
 
 [[ $binary = /* ]] || binary="$PWD/$binary"
@@ -31,7 +32,8 @@ session_dir="$benchmark_root/qt_llm_$timestamp"
 runtime_dir="$session_dir/runtime"
 xdg_runtime_dir="$project_root/runtime/xdg"
 mkdir -p "$session_dir/raw" "$runtime_dir" "$xdg_runtime_dir"
-chmod 700 "$xdg_runtime_dir"
+source "$script_dir/jetson_qt_hmi_env.sh"
+prepare_jetson_qt_hmi_env "$xdg_runtime_dir"
 
 cache_file="$(dirname "$(dirname "$binary")")/CMakeCache.txt"
 {
@@ -40,8 +42,11 @@ cache_file="$(dirname "$(dirname "$binary")")/CMakeCache.txt"
     echo "binary=$binary"
     echo "model=$model"
     echo "model_sha256=$(sha256sum "$model" | awk '{print $1}')"
-    echo "display=${DISPLAY:-:0}"
-    echo "cuda_home=${CUDA_HOME:-<unset>}"
+    echo "display=$DISPLAY"
+    echo "xauthority=$XAUTHORITY"
+    echo "dbus_session_bus_address=$DBUS_SESSION_BUS_ADDRESS"
+    echo "qt_im_module=$QT_IM_MODULE"
+    echo "cuda_home=$CUDA_HOME"
     echo "nvcc=$(command -v nvcc || true)"
     nvcc -V 2>&1 || true
     if [[ -f $cache_file ]]; then
@@ -73,11 +78,7 @@ trap cleanup EXIT INT TERM
 echo "Benchmark session: $session_dir"
 echo "Close the Qt window when all interactive turns are complete."
 
-env \
-    DISPLAY="${DISPLAY:-:0}" \
-    XAUTHORITY="${XAUTHORITY:-/home/nvidia/.Xauthority}" \
-    XDG_RUNTIME_DIR="$xdg_runtime_dir" \
-    "$binary" "$model" \
+"$binary" "$model" \
     --state-dir "$runtime_dir" \
     --benchmark-dir "$session_dir" \
     > "$session_dir/raw/qt_hmi.log" 2>&1 &
