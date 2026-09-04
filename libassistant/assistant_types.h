@@ -101,13 +101,28 @@ struct IntentResult {
     std::string raw_json;
     int intent_latency_ms{0};
     bool json_valid{false};
+    // True only when a deterministic local parser produced this decision.  It
+    // lets the executor keep a fixed reply on the fast path instead of
+    // needlessly asking the chat model to phrase a confirmation.
+    bool local_route{false};
+};
+
+enum class LocalRouteStatus {
+    // Plain language: skip intent extraction and call the chat model once.
+    Chat,
+    // Business-like but not deterministic: ask Gemma for structured intent.
+    SemanticFallback,
+    // Deterministically parsed and validated locally.
+    FastPath
 };
 
 struct RequestAnalysis {
-    IntentType task_type{IntentType::GeneralChat};
-    std::optional<DeviceCommand> device_command;
-    std::optional<MemoryItem> memory_candidate;
+    LocalRouteStatus status{LocalRouteStatus::Chat};
+    IntentResult intent;
     std::string matched_rule;
+    // Constant, locally derived candidate type.  It is intentionally not an
+    // extracted fact and must never be persisted or executed by itself.
+    std::string semantic_hint;
 };
 
 struct ServiceResult {

@@ -6,6 +6,7 @@
 #include "event_log.h"
 #include "intent_preprocessor.h"
 #include "memory_store.h"
+#include "request_router.h"
 #include "validators.h"
 #include "weather_service.h"
 
@@ -31,6 +32,7 @@ public:
 
 private:
     IntentPreprocessor intent_preprocessor_;
+    RequestRouter request_router_;
     DeviceRegistry device_registry_;
     DeviceCommandValidator device_validator_;
     MemoryItemValidator memory_validator_;

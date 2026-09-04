@@ -3,6 +3,7 @@
 #include "llm.h"
 
 #include <iostream>
+#include <string>
 
 namespace assistant {
 namespace {
@@ -16,7 +17,8 @@ const char kIntentSystemPrompt[] =
     "你不能输出内部device_id，只能输出room, device, action, value。\n"
     "记忆只保存用户偏好或物品位置，不得虚构。\n"
     "命令式表达如打开、关闭、设置、调到、设为，优先按DEVICE_CONTROL处理，不能写成用户偏好。\n"
-    "只有我喜欢、我习惯、以后默认、记住我这类明确偏好表达，才是MEMORY_WRITE。\n"
+    "MEMORY_WRITE可保存用户明确要求记住的内容；也可保存文本中明确陈述的、长期稳定的用户偏好、习惯或物品位置。"
+    "不得把临时情绪、一次性计划、泛化知识或你的推测写入记忆。\n"
     "删除、清除、忘掉、不要记住是MEMORY_DELETE，不能写成MEMORY_WRITE。\n"
     "询问某地天气、气温、降雨、风力、天气预报或历史天气时必须是WEATHER_QUERY。\n"
     "WEATHER_QUERY只提取用户明确说出的city、start_date、end_date、days；日期格式必须为YYYY-MM-DD，未说日期时填空字符串，days未知时填0。不要自行计算今天日期。\n"
@@ -57,8 +59,33 @@ const char kIntentSystemPrompt[] =
     "输出: {\"intent\":\"MEMORY_DELETE\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":{\"category\":\"OBJECT_LOCATION\",\"subject\":\"雨伞\",\"delete_all\":false},\"missing_slots\":[],\"clarification_question\":\"\"}\n"
     "用户: 帮我把空调打开\n"
     "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\",\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"room\"],\"clarification_question\":\"请问要打开哪个房间的空调？\"}\n"
+    "用户: 我通常在晚上十一点阅读半小时\n"
+    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"阅读习惯\",\"attribute\":\"时间和时长\",\"value\":\"晚上十一点阅读半小时\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
+    "用户: 阅读灯位置在书桌旁\n"
+    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"OBJECT_LOCATION\",\"subject\":\"阅读灯\",\"attribute\":\"位置\",\"value\":\"书桌旁\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
+    "用户: 我喜欢什么样的灯光\n"
+    "输出: {\"intent\":\"MEMORY_QUERY\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":{\"subject\":\"灯光\",\"attribute\":\"偏好\"},\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
+    "用户: 阅读时我不喜欢太刺眼的光\n"
+    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"阅读照明\",\"attribute\":\"偏好\",\"value\":\"不喜欢太刺眼的光\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
     "用户: 帮我打开卧室的\n"
     "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"卧室\",\"device\":\"\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"device\"],\"clarification_question\":\"请问要打开卧室的哪个设备？\"}";
+
+std::string makeSystemPrompt(const std::string& semantic_hint) {
+    if (semantic_hint.empty()) return kIntentSystemPrompt;
+
+    std::string prompt{kIntentSystemPrompt};
+    prompt += "\n本地候选提示（仅用于决定是否抽取，不能当成事实，也不能据此猜测）：";
+    if (semantic_hint == "implicit_preference_or_routine") {
+        prompt += "这句话可能包含用户长期偏好或习惯。只有原文确实陈述了稳定信息时才输出MEMORY_WRITE。";
+    } else if (semantic_hint == "implicit_object_location") {
+        prompt += "这句话可能包含用户物品位置。仅在原文明确给出物品和位置时输出MEMORY_WRITE。";
+    } else if (semantic_hint == "memory_recall") {
+        prompt += "这句话可能在查询已保存的偏好或物品信息。请输出MEMORY_QUERY，并提取subject和attribute。";
+    } else if (semantic_hint == "device_fault_report") {
+        prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
+    }
+    return prompt;
+}
 
 }  // namespace
 
@@ -66,7 +93,8 @@ bool IntentPreprocessor::initialize() {
     return true;
 }
 
-IntentResult IntentPreprocessor::analyze(const std::string& user_input) {
+IntentResult IntentPreprocessor::analyze(const std::string& user_input,
+                                         const std::string& semantic_hint) {
     IntentResult result;
     if (user_input.empty()) {
         result.intent = IntentType::GeneralChat;
@@ -79,7 +107,8 @@ IntentResult IntentPreprocessor::analyze(const std::string& user_input) {
     params.max_tokens = 192;
     params.temperature = 0.0f;
     int latency_ms = 0;
-    const int ret = llm_generate_once(kIntentSystemPrompt, user_input.c_str(),
+    const std::string system_prompt = makeSystemPrompt(semantic_hint);
+    const int ret = llm_generate_once(system_prompt.c_str(), user_input.c_str(),
                                       &params, output, sizeof(output), &latency_ms);
     result.intent_latency_ms = latency_ms;
     result.raw_json = output;

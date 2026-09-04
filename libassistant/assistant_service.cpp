@@ -61,6 +61,22 @@ std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
     return "这个设备指令暂时不支持。";
 }
 
+std::string makeLocalMemoryQueryReply(const MemoryQuery& query,
+                                      const MemoryStore& store) {
+    const auto matches = store.selectRelevant(query, 1);
+    if (matches.empty()) return "没有找到相关记忆。";
+    const MemoryItem& item = matches.front();
+    if (item.category == "OBJECT_LOCATION") {
+        return item.subject + "在" + item.value + "。";
+    }
+    return item.subject + "的" + item.attribute + "是" + item.value + "。";
+}
+
+std::string makeLocalFaultReply(const DeviceEvent& event) {
+    return "已记录" + (event.room.empty() ? "" : event.room) + event.device +
+           "故障：" + event.description + "。";
+}
+
 bool containsText(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
 }
@@ -255,44 +271,6 @@ std::string noMemoryContext() {
            "- 系统中没有找到与该问题相关的已存储信息。不得猜测或虚构。\n";
 }
 
-bool looksLikeListQuestion(const std::string& text) {
-    static const std::vector<std::string> query_words = {
-        "查询", "查看", "显示", "列出", "列表", "记录", "有哪些", "有哪", "多少", "什么"
-    };
-    for (const auto& word : query_words) {
-        if (containsText(text, word)) return true;
-    }
-    return false;
-}
-
-std::optional<RecordQuery> inferRecordQuery(const std::string& text) {
-    const bool is_list_question = looksLikeListQuestion(text);
-    const bool mentions_fault = containsText(text, "故障") || containsText(text, "异常") ||
-                                containsText(text, "坏了") || containsText(text, "不制冷");
-    if (mentions_fault && is_list_question) {
-        return RecordQuery{RecordType::DeviceFault};
-    }
-
-    const bool mentions_preference = containsText(text, "偏好") || containsText(text, "喜欢什么") ||
-                                     containsText(text, "习惯什么");
-    if (mentions_preference && is_list_question) {
-        return RecordQuery{RecordType::UserPreference};
-    }
-
-    const bool mentions_location = containsText(text, "物品位置") || containsText(text, "位置记录") ||
-                                   containsText(text, "哪些物品") || containsText(text, "物品有哪些");
-    if (mentions_location && is_list_question) {
-        return RecordQuery{RecordType::ObjectLocation};
-    }
-
-    const bool mentions_all_records = containsText(text, "记忆列表") || containsText(text, "所有记忆") ||
-                                      containsText(text, "全部记忆") || containsText(text, "记住了什么");
-    if (mentions_all_records) {
-        return RecordQuery{RecordType::All};
-    }
-    return std::nullopt;
-}
-
 std::string memoryCategoryName(RecordType type) {
     switch (type) {
         case RecordType::UserPreference: return "用户偏好";
@@ -459,14 +437,48 @@ bool AssistantService::initialize() {
 }
 
 ServiceResult AssistantService::process(const std::string& user_input) {
-    if (const auto record_query = inferRecordQuery(user_input)) {
-        IntentResult intent;
-        intent.intent = IntentType::RecordQuery;
-        intent.record_query = *record_query;
-        intent.json_valid = true;
-        return processAnalyzed(user_input, intent);
+    // Continue a known business turn before considering either the local parser
+    // or the LLM.  The existing executor already merges locally extracted slots.
+    if (pending_device_command_) {
+        IntentResult continuation;
+        continuation.intent = IntentType::GeneralChat;
+        continuation.local_route = true;
+        continuation.json_valid = true;
+        return processAnalyzed(user_input, continuation);
     }
-    IntentResult intent = intent_preprocessor_.analyze(user_input);
+
+    const RequestAnalysis local = request_router_.analyze(user_input);
+    if (local.status == LocalRouteStatus::FastPath) {
+        return processAnalyzed(user_input, local.intent);
+    }
+
+    if (local.status == LocalRouteStatus::Chat) {
+        // A normal conversation needs no intent JSON.  Sending it straight to
+        // the conversation runtime avoids the former router-Gemma +
+        // chat-Gemma double inference.
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        chat.local_route = true;
+        chat.json_valid = true;
+        return processAnalyzed(user_input, chat);
+    }
+
+    // SemanticFallback is a business request.  Gemma gets one chance to
+    // produce a structured intent; an unstructured answer is not allowed to
+    // fall through to a second chat inference or to device execution.
+    IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
+    if (intent.intent == IntentType::GeneralChat) {
+        IntentResult clarify;
+        clarify.intent = IntentType::Clarify;
+        clarify.local_route = true;
+        clarify.json_valid = true;
+        clarify.clarification_question =
+            "这条设备或记忆请求还不够明确，请换一种说法后再试。";
+        return processAnalyzed(user_input, clarify);
+    }
+    // Structured business results use deterministic replies after validation,
+    // so intent extraction remains the only Gemma invocation on this branch.
+    intent.local_route = true;
     return processAnalyzed(user_input, intent);
 }
 
@@ -612,9 +624,13 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             if (!event_log_.append(event)) {
                 std::cerr << kLogPrefix << " device_event_save=FAIL" << std::endl;
             }
-            result.call_llm = true;
+            result.call_llm = !intent.local_route;
             result.device_event = event;
-            result.runtime_context = makeDeviceFaultContext(event);
+            if (intent.local_route) {
+                result.fixed_reply = makeLocalFaultReply(event);
+            } else {
+                result.runtime_context = makeDeviceFaultContext(event);
+            }
             std::cout << "[DeviceFault]" << std::endl
                       << formatDeviceEvent(event) << std::endl;
             std::cout << "[InjectedContext]" << std::endl
@@ -662,11 +678,15 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
                 break;
             }
 
-            result.call_llm = true;
-            result.runtime_context =
-                context_builder_.buildMemoryContext(*intent.memory_query, memory_store_);
-            if (result.runtime_context.empty()) {
-                result.runtime_context = noMemoryContext();
+            result.call_llm = !intent.local_route;
+            if (intent.local_route) {
+                result.fixed_reply = makeLocalMemoryQueryReply(*intent.memory_query, memory_store_);
+            } else {
+                result.runtime_context =
+                    context_builder_.buildMemoryContext(*intent.memory_query, memory_store_);
+                if (result.runtime_context.empty()) {
+                    result.runtime_context = noMemoryContext();
+                }
             }
             std::cout << "[InjectedContext]" << std::endl
                       << result.runtime_context;

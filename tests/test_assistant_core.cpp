@@ -4,6 +4,7 @@
 #include "event_log.h"
 #include "intent_json_parser.h"
 #include "memory_store.h"
+#include "request_router.h"
 #include "validators.h"
 #include "weather_service.h"
 
@@ -29,6 +30,8 @@ using assistant::MemoryItemValidator;
 using assistant::MemoryDeleteRequest;
 using assistant::MemoryQuery;
 using assistant::MemoryStore;
+using assistant::LocalRouteStatus;
+using assistant::RequestRouter;
 using assistant::ServiceResult;
 using assistant::WeatherQuery;
 using assistant::WeatherQueryValidator;
@@ -410,6 +413,75 @@ int main() {
         CHECK(later.task_type == IntentType::GeneralChat);
         CHECK(later.call_llm);
         CHECK(!later.device_command);
+    }
+
+    resetTestFile();
+    {
+        RequestRouter router;
+        CHECK(router.analyze("你好，今天心情怎么样？").status == LocalRouteStatus::Chat);
+        CHECK(router.analyze("请记住我不喜欢太刺眼的光").status ==
+              LocalRouteStatus::SemanticFallback);
+        CHECK(router.analyze("我正在准备睡前阅读，我有一盏阅读灯，位置在书桌旁。").semantic_hint ==
+              "implicit_object_location");
+        CHECK(router.analyze("我通常在晚上十一点阅读半小时。").semantic_hint ==
+              "implicit_preference_or_routine");
+        CHECK(router.analyze("阅读时我不喜欢太刺眼的光。").semantic_hint ==
+              "implicit_preference_or_routine");
+        CHECK(router.analyze("我喜欢什么样的灯光？").semantic_hint == "memory_recall");
+        CHECK(router.analyze("空调怎么好像不工作了？").semantic_hint == "device_fault_report");
+        CHECK(router.analyze("我准备阅读半小时，请给我一个简短建议。").status ==
+              LocalRouteStatus::Chat);
+
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+
+        // A business-shaped request that the structured model cannot resolve
+        // must fail closed instead of starting a second chat-model turn.
+        ServiceResult semantic_rejection = service.process("请记住我不喜欢太刺眼的光");
+        CHECK(semantic_rejection.task_type == IntentType::Clarify);
+        CHECK(!semantic_rejection.call_llm);
+        CHECK(!semantic_rejection.fixed_reply.empty());
+
+        // Fast-path commands must not need the LLM router before validation.
+        ServiceResult opened = service.process("打开客厅的灯");
+        CHECK(opened.task_type == IntentType::DeviceControl);
+        CHECK(!opened.call_llm);
+        CHECK(opened.intent_latency_ms == 0);
+        CHECK(opened.device_command);
+
+        ServiceResult invalid = service.process("把客厅灯设置为二十度");
+        CHECK(invalid.task_type == IntentType::DeviceControl);
+        CHECK(!invalid.call_llm);
+        CHECK(invalid.fixed_reply.find("不支持温度设置") != std::string::npos);
+
+        ServiceResult first = service.process("打开空调");
+        CHECK(first.task_type == IntentType::Clarify);
+        CHECK(!first.call_llm);
+        ServiceResult completed = service.process("客厅的");
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "living_room_ac");
+
+        ServiceResult fault = service.process("请记录，客厅空调不制冷");
+        CHECK(fault.task_type == IntentType::DeviceFault);
+        CHECK(!fault.call_llm);
+        CHECK(fault.device_event);
+
+        ServiceResult stored = service.process("请记住，我的钥匙放在客厅鞋柜第二层");
+        CHECK(stored.task_type == IntentType::MemoryWrite);
+        CHECK(!stored.call_llm);
+        CHECK(stored.stored_memory);
+        CHECK(stored.stored_memory->subject == "钥匙");
+
+        ServiceResult found = service.process("我的钥匙放在哪里");
+        CHECK(found.task_type == IntentType::MemoryQuery);
+        CHECK(!found.call_llm);
+        CHECK(found.fixed_reply.find("客厅鞋柜第二层") != std::string::npos);
+
+        ServiceResult records = service.process("查看设备故障记录");
+        CHECK(records.task_type == IntentType::RecordQuery);
+        CHECK(!records.call_llm);
+        CHECK(records.fixed_reply.find("客厅空调") != std::string::npos);
     }
 
     resetTestFile();
