@@ -356,6 +356,39 @@ int main() {
 
     {
         AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult extracted_memory;
+        extracted_memory.intent = IntentType::MemoryWrite;
+        extracted_memory.memory =
+            makeItem("USER_PREFERENCE", "空调", "温度偏好", "25度", 0);
+        ServiceResult remembered = service.processAnalyzed(
+            "请记住，我睡觉时喜欢把空调设为二十五度。", extracted_memory);
+        CHECK(remembered.task_type == IntentType::MemoryWrite);
+        CHECK(remembered.stored_memory);
+        CHECK(!remembered.device_command);
+    }
+
+    resetTestFile();
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        ServiceResult pending = service.process("打开空调");
+        CHECK(pending.task_type == IntentType::Clarify);
+
+        // A new memory request is not a slot answer for the pending command.
+        ServiceResult memory_request = service.process(
+            "请记住，我睡觉时喜欢把空调设为二十五度。");
+        CHECK(memory_request.task_type == IntentType::Clarify);
+        CHECK(!memory_request.device_command);
+
+        ServiceResult after_interrupt = service.process("客厅");
+        CHECK(after_interrupt.task_type == IntentType::GeneralChat);
+        CHECK(!after_interrupt.device_command);
+    }
+
+    resetTestFile();
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
         IntentResult wrong;
         wrong.intent = IntentType::MemoryWrite;
         wrong.memory = makeItem("USER_PREFERENCE", "卧室灯温度", "偏好", "26度", 0);

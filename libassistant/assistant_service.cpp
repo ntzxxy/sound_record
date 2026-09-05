@@ -88,9 +88,16 @@ bool isCancelText(const std::string& text) {
 }
 
 bool isPreferenceMemoryText(const std::string& text) {
-    return containsText(text, "我喜欢") || containsText(text, "我不喜欢") ||
-           containsText(text, "我习惯") || containsText(text, "以后默认") ||
-           containsText(text, "记住我") || containsText(text, "偏好");
+    return containsText(text, "喜欢") || containsText(text, "习惯") ||
+           containsText(text, "通常") || containsText(text, "一般") ||
+           containsText(text, "以后默认") || containsText(text, "记住") ||
+           containsText(text, "偏好") || containsText(text, "位置在");
+}
+
+bool isMemorySemanticHint(const std::string& hint) {
+    return hint == "explicit_memory_write" ||
+           hint == "implicit_preference_or_routine" ||
+           hint == "implicit_object_location";
 }
 
 bool hasDeviceWord(const std::string& text) {
@@ -437,9 +444,18 @@ bool AssistantService::initialize() {
 }
 
 ServiceResult AssistantService::process(const std::string& user_input) {
+    const RequestAnalysis local = request_router_.analyze(user_input);
+
     // Continue a known business turn before considering either the local parser
-    // or the LLM.  The existing executor already merges locally extracted slots.
-    if (pending_device_command_) {
+    // or the LLM. A new explicit business request must not be consumed as a
+    // slot value for an unrelated pending device command.
+    const bool interrupts_pending =
+        local.status == LocalRouteStatus::FastPath || isMemorySemanticHint(local.semantic_hint);
+    if (pending_device_command_ && interrupts_pending) {
+        pending_device_command_.reset();
+        pending_device_turns_remaining_ = 0;
+        std::cout << "[PendingDeviceCommand] canceled_by_new_request" << std::endl;
+    } else if (pending_device_command_) {
         IntentResult continuation;
         continuation.intent = IntentType::GeneralChat;
         continuation.local_route = true;
@@ -447,7 +463,6 @@ ServiceResult AssistantService::process(const std::string& user_input) {
         return processAnalyzed(user_input, continuation);
     }
 
-    const RequestAnalysis local = request_router_.analyze(user_input);
     if (local.status == LocalRouteStatus::FastPath) {
         return processAnalyzed(user_input, local.intent);
     }
@@ -467,6 +482,16 @@ ServiceResult AssistantService::process(const std::string& user_input) {
     // produce a structured intent; an unstructured answer is not allowed to
     // fall through to a second chat inference or to device execution.
     IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
+    if (isMemorySemanticHint(local.semantic_hint) && intent.intent == IntentType::Clarify) {
+        ServiceResult result;
+        result.task_type = IntentType::Clarify;
+        result.intent_latency_ms = intent.intent_latency_ms;
+        result.call_llm = false;
+        result.fixed_reply = intent.clarification_question.empty()
+                                 ? "这条记忆内容没有成功解析，请换一种说法后再试。"
+                                 : intent.clarification_question;
+        return result;
+    }
     if (intent.intent == IntentType::GeneralChat) {
         // The structured pass has already consumed the only allowed Gemma
         // invocation. Preserve a model-provided safe reply when available;

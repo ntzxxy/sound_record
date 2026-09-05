@@ -323,13 +323,28 @@ int llm_generate_once(const char *system_prompt,
     long long begin_ms = now_ms();
     llama_memory_clear(llama_get_memory(g_intent_ctx), true);
 
-    char prompt_buf[8192];
+    // The structured prompt grew beyond the old fixed 8192-byte buffer.  The
+    // formatter reports the required byte count, so retry with an exact-sized
+    // buffer instead of silently returning an empty intent result.
+    const std::size_t estimated_prompt_bytes =
+        std::strlen(user_message) + (system_prompt ? std::strlen(system_prompt) : 0) + 512;
+    std::vector<char> prompt_buf(std::max<std::size_t>(8192, estimated_prompt_bytes));
     int len = format_prompt_internal(system_prompt, user_message,
-                                     prompt_buf, sizeof(prompt_buf));
-    if (len < 0 || len >= static_cast<int>(sizeof(prompt_buf))) return -1;
+                                     prompt_buf.data(), static_cast<int>(prompt_buf.size()));
+    if (len >= static_cast<int>(prompt_buf.size())) {
+        prompt_buf.resize(static_cast<std::size_t>(len) + 1);
+        len = format_prompt_internal(system_prompt, user_message,
+                                     prompt_buf.data(), static_cast<int>(prompt_buf.size()));
+    }
+    if (len < 0 || len >= static_cast<int>(prompt_buf.size())) {
+        if (latency_ms) *latency_ms = static_cast<int>(now_ms() - begin_ms);
+        fprintf(stderr, "[LLM] 意图提示词格式化失败 required_bytes=%d capacity=%zu\n",
+                len, prompt_buf.size());
+        return -1;
+    }
 
     std::vector<llama_token> prompt_tokens;
-    int n_prompt = tokenize_text(std::string(prompt_buf, len), prompt_tokens);
+    int n_prompt = tokenize_text(std::string(prompt_buf.data(), len), prompt_tokens);
     if (n_prompt <= 0) return -1;
     if (n_prompt > kIntentContextTokens) {
         fprintf(stderr, "[LLM] 意图提示词超出 %d tokens\n", kIntentContextTokens);
