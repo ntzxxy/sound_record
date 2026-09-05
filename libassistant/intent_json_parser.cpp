@@ -233,6 +233,11 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         getStringField(memory_json, "subject", &item.subject);
         getStringField(memory_json, "attribute", &item.attribute);
         getStringField(memory_json, "value", &item.value);
+        getStringField(memory_json, "condition", &item.condition);
+        getStringField(memory_json, "context", &item.context);
+        getStringField(memory_json, "time", &item.time);
+        getStringField(memory_json, "scope", &item.scope);
+        item.confidence = static_cast<int>(getOptionalNumberField(memory_json, "confidence").value_or(100));
         parsed.memory = item;
     }
 
@@ -241,6 +246,8 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         MemoryQuery query;
         getStringField(query_json, "subject", &query.subject);
         getStringField(query_json, "attribute", &query.attribute);
+        getStringField(query_json, "condition", &query.condition);
+        getStringField(query_json, "scope", &query.scope);
         parsed.memory_query = query;
     }
 

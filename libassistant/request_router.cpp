@@ -179,10 +179,17 @@ LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
 }
 
 bool hasExplicitMemoryWrite(const std::string& text) {
-    return contains(text, "请记住") || contains(text, "记住我") ||
-           contains(text, "我的偏好") || contains(text, "我喜欢") ||
-           contains(text, "我不喜欢") || contains(text, "我习惯") ||
-           contains(text, "以后默认");
+    if (contains(text, "请记住") || contains(text, "记住我") ||
+        contains(text, "我的偏好") || contains(text, "以后默认")) {
+        return true;
+    }
+    const bool temporary_topic = (contains(text, "今天") || contains(text, "这次") ||
+                                  contains(text, "现在")) &&
+                                 (contains(text, "天气") || contains(text, "电影") ||
+                                  contains(text, "新闻"));
+    return !temporary_topic &&
+           (contains(text, "我喜欢") || contains(text, "我不喜欢") ||
+            contains(text, "我习惯"));
 }
 
 std::optional<MemoryItem> parseObjectLocationWrite(const std::string& text) {
@@ -195,7 +202,7 @@ std::optional<MemoryItem> parseObjectLocationWrite(const std::string& text) {
     subject = trimPunctuation(subject);
     std::string value = trimPunctuation(text.substr(marker + std::string("放在").size()));
     if (subject.empty() || value.empty()) return std::nullopt;
-    return MemoryItem{"OBJECT_LOCATION", subject, "位置", value, 0};
+    return MemoryItem{"OBJECT_LOCATION", subject, "位置", value, 0, "", "", "", "", 100};
 }
 
 std::optional<MemoryQuery> parseExactLocationQuery(const std::string& text) {
@@ -205,7 +212,7 @@ std::optional<MemoryQuery> parseExactLocationQuery(const std::string& text) {
     for (const char* noise : {"我的", "我", "请问", "请", "放"}) eraseAll(&subject, noise);
     subject = trimPunctuation(subject);
     if (subject.empty()) return std::nullopt;
-    return MemoryQuery{subject, "位置"};
+    return MemoryQuery{subject, "位置", "", ""};
 }
 
 // Preference recall has a small, stable vocabulary in the supported Chinese
@@ -292,18 +299,35 @@ bool hasFaultSymptom(const std::string& text) {
 bool isMemoryRecallCandidate(const std::string& text) {
     const bool asks = contains(text, "还记得") || contains(text, "什么") ||
                       contains(text, "哪种") || contains(text, "哪里") ||
-                      contains(text, "哪个");
+                      contains(text, "哪个") || contains(text, "什么时候") ||
+                      contains(text, "多久");
     const bool refers_to_memory = contains(text, "偏好") || contains(text, "喜欢") ||
                                   contains(text, "习惯") || contains(text, "记住") ||
-                                  contains(text, "灯光");
+                                  contains(text, "灯光") ||
+                                  (contains(text, "阅读") &&
+                                   (contains(text, "之前") || contains(text, "一般") ||
+                                    contains(text, "平时") || contains(text, "通常")));
     return asks && refers_to_memory;
 }
 
 bool hasImplicitPreferenceOrRoutine(const std::string& text) {
-    return contains(text, "我喜欢") || contains(text, "我不喜欢") || contains(text, "我习惯") ||
-           contains(text, "我通常") || contains(text, "我经常") || contains(text, "我平时") ||
+    const bool temporary_topic = (contains(text, "今天") || contains(text, "这次") ||
+                                  contains(text, "现在")) &&
+                                 (contains(text, "天气") || contains(text, "电影") ||
+                                  contains(text, "新闻"));
+    if (temporary_topic) return false;
+    const bool first_person_stable = contains(text, "我喜欢") || contains(text, "我不喜欢") ||
+           contains(text, "我习惯") || contains(text, "我通常") || contains(text, "我一般") ||
+           contains(text, "我经常") || contains(text, "我平时") ||
            contains(text, "每晚我") || contains(text, "每天我") || contains(text, "睡前我") ||
            contains(text, "我睡前") || contains(text, "阅读时我") || contains(text, "我阅读时");
+    const bool has_reusable_scene = contains(text, "阅读") || contains(text, "看书") ||
+           contains(text, "睡觉") || contains(text, "晚上") || contains(text, "夏天") ||
+           contains(text, "回家");
+    const bool preference_expression = contains(text, "不要太亮") || contains(text, "不刺眼") ||
+           contains(text, "比较舒服") || contains(text, "暖光") || contains(text, "凉一点") ||
+           contains(text, "以后");
+    return first_person_stable || (has_reusable_scene && preference_expression);
 }
 
 bool hasImplicitObjectLocation(const std::string& text) {
@@ -327,12 +351,14 @@ std::string semanticCandidateHint(const std::string& text) {
 }
 
 std::optional<MemoryQuery> chatMemoryContextQuery(const std::string& text) {
-    if (contains(text, "阅读")) return MemoryQuery{"阅读", ""};
+    if (contains(text, "阅读") || contains(text, "看书")) {
+        return MemoryQuery{"阅读", "", "阅读", ""};
+    }
     if (contains(text, "灯光") || contains(text, "照明") || contains(text, "刺眼")) {
-        return MemoryQuery{"", "偏好"};
+        return MemoryQuery{"", "偏好", "", ""};
     }
     if (contains(text, "偏好") || contains(text, "习惯")) {
-        return MemoryQuery{"", "偏好"};
+        return MemoryQuery{"", "偏好", "", ""};
     }
     return std::nullopt;
 }

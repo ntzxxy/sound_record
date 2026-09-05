@@ -52,11 +52,20 @@ struct MemoryItem {
     std::string attribute;
     std::string value;
     int64_t updated_at{0};
+    // Conditions distinguish a global preference from one that applies only
+    // during a scene such as reading or sleeping.
+    std::string condition;
+    std::string context;
+    std::string time;
+    std::string scope;
+    int confidence{100};
 };
 
 struct MemoryQuery {
     std::string subject;
     std::string attribute;
+    std::string condition;
+    std::string scope;
 };
 
 struct MemoryDeleteRequest {

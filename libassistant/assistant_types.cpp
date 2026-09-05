@@ -82,6 +82,11 @@ std::string formatMemoryItem(const MemoryItem& item) {
         << "subject=" << item.subject << '\n'
         << "attribute=" << item.attribute << '\n'
         << "value=" << item.value << '\n'
+        << "condition=" << item.condition << '\n'
+        << "context=" << item.context << '\n'
+        << "time=" << item.time << '\n'
+        << "scope=" << item.scope << '\n'
+        << "confidence=" << item.confidence << '\n'
         << "updated_at=" << item.updated_at;
     return oss.str();
 }

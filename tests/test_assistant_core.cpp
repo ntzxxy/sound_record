@@ -194,7 +194,8 @@ int main() {
             "说明文字\n{\"intent\":\"MEMORY_WRITE\",\"device_command\":null,"
             "\"device_event\":null,"
             "\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"睡眠照明\","
-            "\"attribute\":\"偏好\",\"value\":\"关闭主灯\"},\"memory_query\":null,"
+            "\"attribute\":\"偏好\",\"value\":\"关闭主灯\",\"condition\":\"睡觉时\","
+            "\"context\":\"睡眠环境\",\"time\":\"\",\"scope\":\"卧室\",\"confidence\":95},\"memory_query\":null,"
             "\"clarification_question\":\"\",\"reply\":\"好的，睡眠时会避免主灯。\"}\n尾部文字";
         CHECK(parser.parse(wrapped, &result, &error));
         CHECK(result.intent == IntentType::MemoryWrite);
@@ -203,6 +204,9 @@ int main() {
         CHECK(result.memory->subject == "睡眠照明");
         CHECK(result.memory->attribute == "偏好");
         CHECK(result.memory->value == "关闭主灯");
+        CHECK(result.memory->condition == "睡觉时");
+        CHECK(result.memory->scope == "卧室");
+        CHECK(result.memory->confidence == 95);
         CHECK(result.response_text == "好的，睡眠时会避免主灯。");
     }
 
@@ -422,6 +426,9 @@ int main() {
         CHECK(router.analyze("你好，今天心情怎么样？").status == LocalRouteStatus::Chat);
         CHECK(router.analyze("请记住我不喜欢太刺眼的光").status ==
               LocalRouteStatus::SemanticFallback);
+        CHECK(router.analyze("晚上看书的时候，灯不要太亮。").semantic_hint ==
+              "implicit_preference_or_routine");
+        CHECK(router.analyze("我喜欢今天的天气。").status == LocalRouteStatus::Chat);
         CHECK(router.analyze("我正在准备睡前阅读，我有一盏阅读灯，位置在书桌旁。").semantic_hint ==
               "implicit_object_location");
         CHECK(router.analyze("我通常在晚上十一点阅读半小时。").semantic_hint ==
@@ -435,6 +442,7 @@ int main() {
         CHECK(preference_query.intent.memory_query->attribute == "偏好");
         CHECK(router.analyze("你还记得我不喜欢哪种光吗？").status ==
               LocalRouteStatus::FastPath);
+        CHECK(router.analyze("我之前一般什么时候阅读？").semantic_hint == "memory_recall");
         CHECK(router.analyze("室内温度一般设置多少比较舒服？").status ==
               LocalRouteStatus::Chat);
         CHECK(router.analyze("打开").status == LocalRouteStatus::Chat);
@@ -508,7 +516,7 @@ int main() {
 
         IntentResult memory_aware_chat;
         memory_aware_chat.intent = IntentType::GeneralChat;
-        memory_aware_chat.memory_context_query = MemoryQuery{"钥匙", "位置"};
+        memory_aware_chat.memory_context_query = MemoryQuery{"钥匙", "位置", "", ""};
         ServiceResult contextual = service.processAnalyzed("钥匙在哪儿？", memory_aware_chat);
         CHECK(contextual.call_llm);
         CHECK(contextual.runtime_context.find("客厅鞋柜第二层") != std::string::npos);
@@ -705,6 +713,41 @@ int main() {
         CHECK(context.find("玄关柜最下层") != std::string::npos);
         CHECK(context.find("电视柜左边抽屉") == std::string::npos);
         CHECK(context.size() <= 120);
+    }
+
+    resetTestFile();
+
+    {
+        // A global lighting preference and a reading-specific one must coexist;
+        // the scene-specific item should win when the query carries a scene.
+        MemoryStore store(kTestMemoryPath);
+        CHECK(store.load());
+        MemoryItem global = makeItem("USER_PREFERENCE", "灯光", "偏好", "喜欢暖光", 100);
+        global.scope = "全屋";
+        MemoryItem reading = makeItem("USER_PREFERENCE", "灯光", "偏好", "不喜欢太刺眼", 101);
+        reading.condition = "阅读时";
+        reading.context = "阅读环境";
+        reading.confidence = 95;
+        store.upsert(global);
+        store.upsert(reading);
+        MemoryQuery reading_query{"阅读", "偏好", "阅读", ""};
+        const auto matches = store.selectRelevant(reading_query, 2);
+        CHECK(matches.size() == 2);
+        CHECK(matches.front().condition == "阅读时");
+        CHECK(matches.front().value == "不喜欢太刺眼");
+        CHECK(store.save());
+
+        MemoryStore restored(kTestMemoryPath);
+        CHECK(restored.load());
+        const auto snapshot = restored.snapshot();
+        CHECK(snapshot.size() == 2);
+        const auto restored_matches = restored.selectRelevant(reading_query, 1);
+        CHECK(restored_matches.size() == 1);
+        CHECK(restored_matches.front().condition == "阅读时");
+        ContextBuilder builder;
+        const std::string context = builder.buildMemoryContext(reading_query, restored);
+        CHECK(context.find("不喜欢太刺眼") != std::string::npos);
+        CHECK(context.find("条件：阅读时") != std::string::npos);
     }
 
     resetTestFile();

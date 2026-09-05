@@ -4,13 +4,20 @@ namespace assistant {
 namespace {
 
 std::string describeMemory(const MemoryItem& item) {
+    std::string qualifier;
+    if (!item.condition.empty()) qualifier += "，条件：" + item.condition;
+    if (!item.time.empty()) qualifier += "，时间：" + item.time;
+    if (!item.scope.empty()) qualifier += "，范围：" + item.scope;
     if (item.category == "USER_PREFERENCE") {
-        return "- 用户偏好：" + item.subject + "的" + item.attribute + "是" + item.value + "。";
+        return "- 用户偏好：" + item.subject + "的" + item.attribute + "是" + item.value + qualifier + "。";
+    }
+    if (item.category == "HABIT" || item.category == "ROUTINE") {
+        return "- 用户习惯：" + item.subject + "的" + item.attribute + "是" + item.value + qualifier + "。";
     }
     if (item.category == "OBJECT_LOCATION") {
         return "- 物品位置：" + item.subject + "位于" + item.value + "。";
     }
-    return "- 系统记忆：" + item.subject + "的" + item.attribute + "是" + item.value + "。";
+    return "- 系统记忆：" + item.subject + "的" + item.attribute + "是" + item.value + qualifier + "。";
 }
 
 }  // namespace

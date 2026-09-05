@@ -68,6 +68,16 @@ int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
 
     if (!query.attribute.empty() && item.attribute == query.attribute) score += 5;
     else if (!query.attribute.empty() && item.attribute.find(query.attribute) != std::string::npos) score += 2;
+
+    if (!query.condition.empty() && item.condition == query.condition) score += 8;
+    else if (!query.condition.empty() &&
+             (item.condition.find(query.condition) != std::string::npos ||
+              query.condition.find(item.condition) != std::string::npos)) score += 4;
+
+    if (!query.scope.empty() && item.scope == query.scope) score += 5;
+    else if (!query.scope.empty() &&
+             (item.scope.find(query.scope) != std::string::npos ||
+              query.scope.find(item.scope) != std::string::npos)) score += 2;
     return score;
 }
 
@@ -98,6 +108,16 @@ bool MemoryStore::load() {
             item.updated_at = std::stoll(fields[4]);
         } catch (...) {
             item.updated_at = 0;
+        }
+        // Version 1 rows have five fields.  New metadata is appended, keeping
+        // existing board-side memory files readable without a migration.
+        if (fields.size() > 5) item.condition = fields[5];
+        if (fields.size() > 6) item.context = fields[6];
+        if (fields.size() > 7) item.time = fields[7];
+        if (fields.size() > 8) item.scope = fields[8];
+        if (fields.size() > 9) {
+            try { item.confidence = std::stoi(fields[9]); }
+            catch (...) { item.confidence = 100; }
         }
         if (!item.category.empty() && !item.subject.empty() &&
             !item.attribute.empty() && !item.value.empty()) {
@@ -137,7 +157,12 @@ bool MemoryStore::save() const {
                 << escapeField(item.subject) << '\t'
                 << escapeField(item.attribute) << '\t'
                 << escapeField(item.value) << '\t'
-                << item.updated_at << '\n';
+                << item.updated_at << '\t'
+                << escapeField(item.condition) << '\t'
+                << escapeField(item.context) << '\t'
+                << escapeField(item.time) << '\t'
+                << escapeField(item.scope) << '\t'
+                << item.confidence << '\n';
         }
         out.flush();
         if (!out.good()) return false;
@@ -158,7 +183,9 @@ void MemoryStore::upsert(const MemoryItem& item) {
     for (auto& existing : items_) {
         if (existing.category == item.category &&
             existing.subject == item.subject &&
-            existing.attribute == item.attribute) {
+            existing.attribute == item.attribute &&
+            existing.condition == item.condition &&
+            existing.scope == item.scope) {
             existing = item;
             return;
         }
@@ -197,7 +224,9 @@ bool MemoryStore::removeExact(const MemoryItem& item) {
     const auto found = std::find_if(items_.begin(), items_.end(), [&](const MemoryItem& existing) {
         return existing.category == item.category &&
                existing.subject == item.subject &&
-               existing.attribute == item.attribute;
+               existing.attribute == item.attribute &&
+               existing.condition == item.condition &&
+               existing.scope == item.scope;
     });
     if (found == items_.end()) return false;
     items_.erase(found);
