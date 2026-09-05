@@ -456,7 +456,7 @@ ServiceResult AssistantService::process(const std::string& user_input) {
         // A normal conversation needs no intent JSON.  Sending it straight to
         // the conversation runtime avoids the former router-Gemma +
         // chat-Gemma double inference.
-        IntentResult chat;
+        IntentResult chat = local.intent;
         chat.intent = IntentType::GeneralChat;
         chat.local_route = true;
         chat.json_valid = true;
@@ -557,6 +557,13 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
 
     switch (intent.intent) {
         case IntentType::GeneralChat: {
+            if (intent.memory_context_query) {
+                result.runtime_context = context_builder_.buildMemoryContext(
+                    *intent.memory_context_query, memory_store_, 3);
+            }
+            if (result.runtime_context.empty() && intent.include_recent_memory_context) {
+                result.runtime_context = context_builder_.buildRecentMemoryContext(memory_store_, 3);
+            }
             result.call_llm = true;
             break;
         }
@@ -662,7 +669,9 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
                 std::cerr << kLogPrefix << " memory_save=FAIL" << std::endl;
             }
             result.call_llm = false;
-            result.fixed_reply = "好的，我记住了。";
+            result.fixed_reply = intent.response_text.empty()
+                                     ? "好的，我记住了。"
+                                     : intent.response_text;
             result.stored_memory = item;
             std::cout << "[MemoryWrite]" << std::endl
                       << formatMemoryItem(item) << std::endl;

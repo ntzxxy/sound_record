@@ -253,6 +253,22 @@ std::string semanticCandidateHint(const std::string& text) {
     return "";
 }
 
+std::optional<MemoryQuery> chatMemoryContextQuery(const std::string& text) {
+    if (contains(text, "阅读")) return MemoryQuery{"阅读", ""};
+    if (contains(text, "灯光") || contains(text, "照明") || contains(text, "刺眼")) {
+        return MemoryQuery{"", "偏好"};
+    }
+    if (contains(text, "偏好") || contains(text, "习惯")) {
+        return MemoryQuery{"", "偏好"};
+    }
+    return std::nullopt;
+}
+
+bool refersToEarlierConversation(const std::string& text) {
+    return contains(text, "刚才") || contains(text, "前面") || contains(text, "之前") ||
+           contains(text, "上面");
+}
+
 RequestAnalysis fastResult(IntentResult intent, const char* rule) {
     intent.local_route = true;
     intent.json_valid = true;
@@ -335,8 +351,13 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         }
     }
 
-    // No business rule matched.  Let the conversation model answer directly;
-    // do not spend a separate Gemma call generating an intent JSON first.
+    // No business operation matched.  A tiny topic lookup can still inject
+    // relevant persisted memory into the single normal-chat Gemma call.
+    if (const auto query = chatMemoryContextQuery(input)) {
+        analysis.intent.memory_context_query = *query;
+    }
+    analysis.intent.include_recent_memory_context = refersToEarlierConversation(input);
+    // Do not spend a separate Gemma call generating an intent JSON first.
     analysis.matched_rule = "chat";
     return analysis;
 }

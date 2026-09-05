@@ -265,6 +265,7 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
 
     parsed.missing_slots = getStringArrayField(parsed.raw_json, "missing_slots");
     getStringField(parsed.raw_json, "clarification_question", &parsed.clarification_question);
+    getStringField(parsed.raw_json, "reply", &parsed.response_text);
     parsed.json_valid = true;
     *result = parsed;
     return true;

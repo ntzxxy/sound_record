@@ -14,6 +14,9 @@ public:
                                    const MemoryStore& store,
                                    std::size_t max_items = 5,
                                    std::size_t max_chars = 600) const;
+    std::string buildRecentMemoryContext(const MemoryStore& store,
+                                         std::size_t max_items = 3,
+                                         std::size_t max_chars = 600) const;
 };
 
 }  // namespace assistant

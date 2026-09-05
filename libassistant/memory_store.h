@@ -23,6 +23,7 @@ public:
 
     std::vector<MemoryItem> selectRelevant(const MemoryQuery& query,
                                            std::size_t max_items = 5) const;
+    std::vector<MemoryItem> recent(std::size_t max_items = 5) const;
     std::vector<MemoryItem> snapshot() const;
 
 private:

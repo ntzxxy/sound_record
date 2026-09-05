@@ -96,8 +96,13 @@ struct IntentResult {
     std::optional<MemoryDeleteRequest> memory_delete;
     std::optional<RecordQuery> record_query;
     std::optional<WeatherQuery> weather_query;
+    // Local-only selectors for injecting memory into a normal chat turn.
+    std::optional<MemoryQuery> memory_context_query;
+    bool include_recent_memory_context{false};
     std::vector<std::string> missing_slots;
     std::string clarification_question;
+    // Optional user-facing text from a validated structured result.
+    std::string response_text;
     std::string raw_json;
     int intent_latency_ms{0};
     bool json_valid{false};

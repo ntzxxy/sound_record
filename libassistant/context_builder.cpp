@@ -33,4 +33,20 @@ std::string ContextBuilder::buildMemoryContext(const MemoryQuery& query,
     return context;
 }
 
+std::string ContextBuilder::buildRecentMemoryContext(const MemoryStore& store,
+                                                      std::size_t max_items,
+                                                      std::size_t max_chars) const {
+    const auto items = store.recent(max_items);
+    if (items.empty()) return "";
+
+    std::string context = "【近期系统记忆】\n";
+    for (const auto& item : items) {
+        const std::string line = describeMemory(item);
+        if (context.size() + line.size() + 1 > max_chars) break;
+        context += line;
+        context += '\n';
+    }
+    return context == "【近期系统记忆】\n" ? "" : context;
+}
+
 }  // namespace assistant

@@ -195,7 +195,7 @@ int main() {
             "\"device_event\":null,"
             "\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"睡眠照明\","
             "\"attribute\":\"偏好\",\"value\":\"关闭主灯\"},\"memory_query\":null,"
-            "\"clarification_question\":\"\"}\n尾部文字";
+            "\"clarification_question\":\"\",\"reply\":\"好的，睡眠时会避免主灯。\"}\n尾部文字";
         CHECK(parser.parse(wrapped, &result, &error));
         CHECK(result.intent == IntentType::MemoryWrite);
         CHECK(result.memory);
@@ -203,6 +203,7 @@ int main() {
         CHECK(result.memory->subject == "睡眠照明");
         CHECK(result.memory->attribute == "偏好");
         CHECK(result.memory->value == "关闭主灯");
+        CHECK(result.response_text == "好的，睡眠时会避免主灯。");
     }
 
     {
@@ -431,6 +432,10 @@ int main() {
         CHECK(router.analyze("空调怎么好像不工作了？").semantic_hint == "device_fault_report");
         CHECK(router.analyze("我准备阅读半小时，请给我一个简短建议。").status ==
               LocalRouteStatus::Chat);
+        const auto reading_context = router.analyze("如果我说开始阅读，你理解为我想做什么？");
+        CHECK(reading_context.status == LocalRouteStatus::Chat);
+        CHECK(reading_context.intent.memory_context_query);
+        CHECK(reading_context.intent.memory_context_query->subject == "阅读");
 
         AssistantService service(kTestMemoryPath, kTestEventPath);
 
@@ -477,6 +482,22 @@ int main() {
         CHECK(found.task_type == IntentType::MemoryQuery);
         CHECK(!found.call_llm);
         CHECK(found.fixed_reply.find("客厅鞋柜第二层") != std::string::npos);
+
+        IntentResult memory_aware_chat;
+        memory_aware_chat.intent = IntentType::GeneralChat;
+        memory_aware_chat.memory_context_query = MemoryQuery{"钥匙", "位置"};
+        ServiceResult contextual = service.processAnalyzed("钥匙在哪儿？", memory_aware_chat);
+        CHECK(contextual.call_llm);
+        CHECK(contextual.runtime_context.find("客厅鞋柜第二层") != std::string::npos);
+
+        IntentResult reply_with_memory;
+        reply_with_memory.intent = IntentType::MemoryWrite;
+        reply_with_memory.memory = makeItem("USER_PREFERENCE", "阅读照明", "偏好",
+                                            "不喜欢太刺眼的光", 0);
+        reply_with_memory.response_text = "已记住，阅读时我会优先给出柔和照明建议。";
+        ServiceResult stored_reply = service.processAnalyzed("阅读时别太刺眼", reply_with_memory);
+        CHECK(!stored_reply.call_llm);
+        CHECK(stored_reply.fixed_reply == reply_with_memory.response_text);
 
         ServiceResult records = service.process("查看设备故障记录");
         CHECK(records.task_type == IntentType::RecordQuery);

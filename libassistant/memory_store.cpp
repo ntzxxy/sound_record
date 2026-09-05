@@ -232,6 +232,16 @@ std::vector<MemoryItem> MemoryStore::selectRelevant(const MemoryQuery& query,
     return result;
 }
 
+std::vector<MemoryItem> MemoryStore::recent(std::size_t max_items) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<MemoryItem> result = items_;
+    std::sort(result.begin(), result.end(), [](const MemoryItem& a, const MemoryItem& b) {
+        return a.updated_at > b.updated_at;
+    });
+    if (result.size() > max_items) result.resize(max_items);
+    return result;
+}
+
 std::vector<MemoryItem> MemoryStore::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return items_;
