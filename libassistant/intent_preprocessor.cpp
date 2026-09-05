@@ -16,14 +16,14 @@ const char kIntentSystemPrompt[] =
     "用户反馈设备异常、故障、无法工作、噪音、漏水、不制冷等，属于 DEVICE_FAULT；DEVICE_FAULT 不是设备控制，不要求房间必须明确。\n"
     "你不能输出内部device_id，只能输出room, device, action, value。\n"
     "记忆只保存用户偏好或物品位置，不得虚构。\n"
-    "命令式表达如打开、关闭、设置、调到、设为，优先按DEVICE_CONTROL处理，不能写成用户偏好。\n"
+    "命令式表达如打开、关闭、设置、调到、设为，只有确实要求执行设备操作时才按DEVICE_CONTROL处理；明确请求记住的内容优先按MEMORY_WRITE处理。\n"
     "MEMORY_WRITE可保存用户明确要求记住的内容；也可保存文本中明确陈述的、长期稳定的用户偏好、习惯或物品位置。"
     "不得把临时情绪、一次性计划、泛化知识或你的推测写入记忆。\n"
     "删除、清除、忘掉、不要记住是MEMORY_DELETE，不能写成MEMORY_WRITE。\n"
     "询问某地天气、气温、降雨、风力、天气预报或历史天气时必须是WEATHER_QUERY。\n"
     "WEATHER_QUERY只提取用户明确说出的city、start_date、end_date、days；日期格式必须为YYYY-MM-DD，未说日期时填空字符串，days未知时填0。不要自行计算今天日期。\n"
     "JSON格式固定为：{\"intent\":\"...\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"weather_query\":null,\"missing_slots\":[],\"clarification_question\":\"\",\"reply\":\"\"}\n"
-    "reply是可选的、给用户看的简短自然回答，最长50个汉字；只有在MEMORY_WRITE同时需要回答用户问题时填写。reply不得声称执行过未验证的设备操作。\n"
+    "reply是可选的、给用户看的简短自然回答，最长50个汉字；MEMORY_WRITE或无法形成可靠业务操作但可安全回答的GENERAL_CHAT均可填写。reply不得声称执行过未验证的设备操作。\n"
     "device_command={\"room\":\"\",\"device\":\"\",\"action\":\"TURN_ON|TURN_OFF|SET_TEMPERATURE\",\"value\":null}\n"
     "CLARIFY如果是设备控制信息不完整，必须保留已知device_command槽位，并在missing_slots中输出缺失字段：room, device, action, value。\n"
     "device_event={\"room\":\"\",\"device\":\"\",\"event_type\":\"FAULT\",\"description\":\"\"}\n"
@@ -84,6 +84,10 @@ std::string makeSystemPrompt(const std::string& semantic_hint) {
         prompt += "这句话可能在查询已保存的偏好或物品信息。请输出MEMORY_QUERY，并提取subject和attribute。";
     } else if (semantic_hint == "device_fault_report") {
         prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
+    } else if (semantic_hint == "explicit_memory_write") {
+        prompt += "用户明确要求持久记忆。该意图优先于句内描述性的设置、打开等词；只要原文给出了可长期保存的偏好、习惯或物品位置，就输出MEMORY_WRITE。";
+    } else if (semantic_hint == "complex_device_control") {
+        prompt += "这可能是复杂设备控制，但本地不支持直接执行。只有能抽取为受支持的完整DEVICE_CONTROL时才输出该类型；否则输出GENERAL_CHAT并在reply中给出安全答复，绝不虚构执行结果。";
     }
     return prompt;
 }

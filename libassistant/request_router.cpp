@@ -117,6 +117,67 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     return command;
 }
 
+// This is deliberately a small declarative command grammar, rather than a
+// collection of route-priority keywords.  The extracted slots are evaluated
+// together so the caller can distinguish an executable command from a genuine
+// incomplete command and from ordinary conversation.
+enum class DeviceCommandMatch {
+    NoMatch,
+    PartialMatch,
+    FullMatch,
+    ComplexCandidate,
+};
+
+struct LocalDeviceControlMatch {
+    DeviceCommandMatch status{DeviceCommandMatch::NoMatch};
+    DeviceCommand command;
+};
+
+bool hasControlVerb(const std::string& text) {
+    return contains(text, "打开") || contains(text, "开启") || contains(text, "关闭") ||
+           contains(text, "关掉") || contains(text, "设置") || contains(text, "设为") ||
+           contains(text, "调到") || contains(text, "调成");
+}
+
+LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
+    LocalDeviceControlMatch match;
+    // A number alone is not an operation.  A supported command must contain a
+    // declared action phrase, plus at least a room or a device anchor.
+    if (!hasControlVerb(text)) return match;
+
+    const auto parsed = parseDeviceCommand(text);
+    if (!parsed || parsed->action.empty()) return match;
+    match.command = *parsed;
+    const bool has_anchor = !match.command.room.empty() || !match.command.device.empty();
+    if (!has_anchor) return match;
+
+    if (match.command.action == "SET_TEMPERATURE") {
+        // A light's non-numeric setting (for example, "调成暖光") is a valid
+        // complex request, but not one of this build's locally executable
+        // temperature commands.  Give Gemma one structured chance instead of
+        // asking an irrelevant temperature clarification.
+        if (match.command.device == "灯" && !match.command.value) {
+            match.status = DeviceCommandMatch::ComplexCandidate;
+            return match;
+        }
+        // "设置客厅的" and "把空调调到" have identified the operation family
+        // but not enough slots.  They are the only cases that may enter FSM.
+        if (!match.command.value || match.command.room.empty() || match.command.device.empty()) {
+            match.status = DeviceCommandMatch::PartialMatch;
+            return match;
+        }
+        match.status = DeviceCommandMatch::FullMatch;
+        return match;
+    }
+
+    if (match.command.room.empty() || match.command.device.empty()) {
+        match.status = DeviceCommandMatch::PartialMatch;
+        return match;
+    }
+    match.status = DeviceCommandMatch::FullMatch;
+    return match;
+}
+
 bool hasExplicitMemoryWrite(const std::string& text) {
     return contains(text, "请记住") || contains(text, "记住我") ||
            contains(text, "我的偏好") || contains(text, "我喜欢") ||
@@ -145,6 +206,24 @@ std::optional<MemoryQuery> parseExactLocationQuery(const std::string& text) {
     subject = trimPunctuation(subject);
     if (subject.empty()) return std::nullopt;
     return MemoryQuery{subject, "位置"};
+}
+
+// Preference recall has a small, stable vocabulary in the supported Chinese
+// commands. Keep it local so an existing preference cannot become a needless
+// structured-model clarification.
+std::optional<MemoryQuery> parsePreferenceQuery(const std::string& text) {
+    const bool asks = contains(text, "还记得") || contains(text, "什么") ||
+                      contains(text, "哪种") || contains(text, "怎样");
+    const bool preference = contains(text, "喜欢") || contains(text, "不喜欢") ||
+                            contains(text, "偏好") || contains(text, "灯光") ||
+                            contains(text, "照明") || contains(text, "光");
+    if (!asks || !preference) return std::nullopt;
+
+    MemoryQuery query;
+    query.attribute = "偏好";
+    if (contains(text, "阅读")) query.subject = "阅读";
+    else if (contains(text, "灯") || contains(text, "光")) query.subject = "灯光";
+    return query;
 }
 
 bool isQueryVerb(const std::string& text) {
@@ -199,12 +278,6 @@ MemoryDeleteRequest parseDelete(const std::string& text) {
     return request;
 }
 
-bool hasControlVerb(const std::string& text) {
-    return contains(text, "打开") || contains(text, "开启") || contains(text, "关闭") ||
-           contains(text, "关掉") || contains(text, "设置") || contains(text, "设为") ||
-           contains(text, "调到") || contains(text, "调成");
-}
-
 bool isAmbiguousBulkControl(const std::string& text) {
     return contains(text, "全部") || contains(text, "所有") || contains(text, "除了") ||
            contains(text, "以及") || contains(text, "和");
@@ -229,8 +302,8 @@ bool isMemoryRecallCandidate(const std::string& text) {
 bool hasImplicitPreferenceOrRoutine(const std::string& text) {
     return contains(text, "我喜欢") || contains(text, "我不喜欢") || contains(text, "我习惯") ||
            contains(text, "我通常") || contains(text, "我经常") || contains(text, "我平时") ||
-           contains(text, "每晚") || contains(text, "每天") || contains(text, "睡前") ||
-           contains(text, "阅读时");
+           contains(text, "每晚我") || contains(text, "每天我") || contains(text, "睡前我") ||
+           contains(text, "我睡前") || contains(text, "阅读时我") || contains(text, "我阅读时");
 }
 
 bool hasImplicitObjectLocation(const std::string& text) {
@@ -326,6 +399,13 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return fastResult(std::move(intent), "exact_location_query");
     }
 
+    if (const auto query = parsePreferenceQuery(input)) {
+        IntentResult intent;
+        intent.intent = IntentType::MemoryQuery;
+        intent.memory_query = *query;
+        return fastResult(std::move(intent), "preference_query");
+    }
+
     const std::string candidate_hint = semanticCandidateHint(input);
     if (!candidate_hint.empty()) {
         analysis.status = LocalRouteStatus::SemanticFallback;
@@ -336,19 +416,35 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
 
     // Explicit preferences are intentionally left for the semantic fallback:
     // a local control parser must never turn a preference into an action.
-    if (hasExplicitMemoryWrite(input) || isAmbiguousBulkControl(input)) {
+    if (hasExplicitMemoryWrite(input)) {
+        analysis.status = LocalRouteStatus::SemanticFallback;
+        analysis.matched_rule = "explicit_memory_write";
+        analysis.semantic_hint = "explicit_memory_write";
+        return analysis;
+    }
+
+    if (isAmbiguousBulkControl(input)) {
         analysis.status = LocalRouteStatus::SemanticFallback;
         analysis.matched_rule = "semantic_fallback";
         return analysis;
     }
 
-    if (hasControlVerb(input)) {
-        if (const auto command = parseDeviceCommand(input)) {
-            IntentResult intent;
-            intent.intent = IntentType::DeviceControl;
-            intent.device_command = *command;
-            return fastResult(std::move(intent), "device_control");
-        }
+    const LocalDeviceControlMatch device_match = matchLocalDeviceControl(input);
+    if (device_match.status == DeviceCommandMatch::FullMatch ||
+        device_match.status == DeviceCommandMatch::PartialMatch) {
+        IntentResult intent;
+        intent.intent = IntentType::DeviceControl;
+        intent.device_command = device_match.command;
+        return fastResult(std::move(intent),
+                          device_match.status == DeviceCommandMatch::FullMatch
+                              ? "device_control_full_match"
+                              : "device_control_partial_match");
+    }
+    if (device_match.status == DeviceCommandMatch::ComplexCandidate) {
+        analysis.status = LocalRouteStatus::SemanticFallback;
+        analysis.matched_rule = "complex_device_control";
+        analysis.semantic_hint = "complex_device_control";
+        return analysis;
     }
 
     // No business operation matched.  A tiny topic lookup can still inject

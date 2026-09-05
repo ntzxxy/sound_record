@@ -428,7 +428,30 @@ int main() {
               "implicit_preference_or_routine");
         CHECK(router.analyze("阅读时我不喜欢太刺眼的光。").semantic_hint ==
               "implicit_preference_or_routine");
-        CHECK(router.analyze("我喜欢什么样的灯光？").semantic_hint == "memory_recall");
+        const auto preference_query = router.analyze("我喜欢什么样的灯光？");
+        CHECK(preference_query.status == LocalRouteStatus::FastPath);
+        CHECK(preference_query.intent.intent == IntentType::MemoryQuery);
+        CHECK(preference_query.intent.memory_query);
+        CHECK(preference_query.intent.memory_query->attribute == "偏好");
+        CHECK(router.analyze("你还记得我不喜欢哪种光吗？").status ==
+              LocalRouteStatus::FastPath);
+        CHECK(router.analyze("室内温度一般设置多少比较舒服？").status ==
+              LocalRouteStatus::Chat);
+        CHECK(router.analyze("打开").status == LocalRouteStatus::Chat);
+        const auto partial_control = router.analyze("打开空调");
+        CHECK(partial_control.status == LocalRouteStatus::FastPath);
+        CHECK(partial_control.matched_rule == "device_control_partial_match");
+        const auto full_control = router.analyze("打开客厅的灯");
+        CHECK(full_control.status == LocalRouteStatus::FastPath);
+        CHECK(full_control.matched_rule == "device_control_full_match");
+        const auto complex_control = router.analyze("把客厅的灯设置成暖光");
+        CHECK(complex_control.status == LocalRouteStatus::SemanticFallback);
+        CHECK(complex_control.semantic_hint == "complex_device_control");
+        CHECK(router.analyze("嗯，帮我想一个睡前放松的办法。").status ==
+              LocalRouteStatus::Chat);
+        const auto explicit_memory = router.analyze("请记住，我睡觉时喜欢把空调设为二十五度。");
+        CHECK(explicit_memory.status == LocalRouteStatus::SemanticFallback);
+        CHECK(explicit_memory.semantic_hint == "explicit_memory_write");
         CHECK(router.analyze("空调怎么好像不工作了？").semantic_hint == "device_fault_report");
         CHECK(router.analyze("我准备阅读半小时，请给我一个简短建议。").status ==
               LocalRouteStatus::Chat);
@@ -498,6 +521,11 @@ int main() {
         ServiceResult stored_reply = service.processAnalyzed("阅读时别太刺眼", reply_with_memory);
         CHECK(!stored_reply.call_llm);
         CHECK(stored_reply.fixed_reply == reply_with_memory.response_text);
+
+        ServiceResult recalled_preference = service.process("你还记得我不喜欢哪种光吗？");
+        CHECK(recalled_preference.task_type == IntentType::MemoryQuery);
+        CHECK(!recalled_preference.call_llm);
+        CHECK(recalled_preference.fixed_reply.find("不喜欢太刺眼的光") != std::string::npos);
 
         ServiceResult records = service.process("查看设备故障记录");
         CHECK(records.task_type == IntentType::RecordQuery);
@@ -606,6 +634,10 @@ int main() {
         ServiceResult stored_fault = service.processAnalyzed("卧室空调不制冷", fault);
         CHECK(stored_fault.task_type == IntentType::DeviceFault);
         CHECK(stored_fault.call_llm);
+
+        ServiceResult fault_with_control_word =
+            service.processAnalyzed("请记录，卧室空调设置异常", fault);
+        CHECK(fault_with_control_word.task_type == IntentType::DeviceFault);
 
         IntentResult preference;
         preference.intent = IntentType::MemoryWrite;

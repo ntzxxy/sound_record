@@ -88,9 +88,9 @@ bool isCancelText(const std::string& text) {
 }
 
 bool isPreferenceMemoryText(const std::string& text) {
-    return containsText(text, "我喜欢") || containsText(text, "我习惯") ||
-           containsText(text, "以后默认") || containsText(text, "记住我") ||
-           containsText(text, "偏好");
+    return containsText(text, "我喜欢") || containsText(text, "我不喜欢") ||
+           containsText(text, "我习惯") || containsText(text, "以后默认") ||
+           containsText(text, "记住我") || containsText(text, "偏好");
 }
 
 bool hasDeviceWord(const std::string& text) {
@@ -468,10 +468,22 @@ ServiceResult AssistantService::process(const std::string& user_input) {
     // fall through to a second chat inference or to device execution.
     IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
     if (intent.intent == IntentType::GeneralChat) {
+        // The structured pass has already consumed the only allowed Gemma
+        // invocation. Preserve a model-provided safe reply when available;
+        // otherwise clarify rather than making a second chat-model call.
+        if (!intent.response_text.empty()) {
+            ServiceResult result;
+            result.task_type = IntentType::GeneralChat;
+            result.intent_latency_ms = intent.intent_latency_ms;
+            result.call_llm = false;
+            result.fixed_reply = intent.response_text;
+            return result;
+        }
         IntentResult clarify;
         clarify.intent = IntentType::Clarify;
         clarify.local_route = true;
         clarify.json_valid = true;
+        clarify.intent_latency_ms = intent.intent_latency_ms;
         clarify.clarification_question =
             "这条设备或记忆请求还不够明确，请换一种说法后再试。";
         return processAnalyzed(user_input, clarify);
@@ -490,7 +502,12 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
-    if (looksLikeDeviceControlText(user_input) && inferred_command) {
+    const bool can_force_device_control =
+        intent.intent == IntentType::GeneralChat ||
+        intent.intent == IntentType::DeviceControl ||
+        intent.intent == IntentType::MemoryWrite ||
+        intent.intent == IntentType::Clarify;
+    if (can_force_device_control && looksLikeDeviceControlText(user_input) && inferred_command) {
         intent.intent = IntentType::DeviceControl;
         intent.device_command = intent.device_command
                                     ? applyDeterministicDeviceSlots(*intent.device_command, inferred_command)
