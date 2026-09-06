@@ -94,20 +94,60 @@ std::optional<double> extractNumber(const std::string& text) {
     return std::nullopt;
 }
 
+// These are language-level entity aliases, not the configured-device list.
+// A match means only that the user is addressing a plausible room/device; the
+// registry remains the sole authority on whether it can be executed.
+struct EntityAlias {
+    const char* text;
+    const char* canonical;
+};
+
+bool extractEntity(const std::string& text,
+                   const EntityAlias* aliases,
+                   std::size_t alias_count,
+                   std::string* out) {
+    if (!out) return false;
+    for (std::size_t i = 0; i < alias_count; ++i) {
+        if (contains(text, aliases[i].text)) {
+            *out = aliases[i].canonical;
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     DeviceCommand command;
-    if (contains(text, "卧室")) command.room = "卧室";
-    else if (contains(text, "客厅")) command.room = "客厅";
-    else if (contains(text, "厨房")) command.room = "厨房";
-    else if (contains(text, "卫生间") || contains(text, "厕所")) command.room = "卫生间";
+    static constexpr EntityAlias kRooms[] = {
+        {"卧室", "卧室"}, {"客厅", "客厅"}, {"厨房", "厨房"},
+        {"卫生间", "卫生间"}, {"厕所", "卫生间"}, {"阳台", "阳台"},
+        {"书房", "书房"}, {"餐厅", "餐厅"}, {"儿童房", "儿童房"},
+        {"玄关", "玄关"},
+    };
+    static constexpr EntityAlias kDevices[] = {
+        {"空气净化器", "空气净化器"}, {"扫地机器人", "扫地机器人"},
+        {"加湿器", "加湿器"}, {"热水器", "热水器"}, {"洗衣机", "洗衣机"},
+        {"空调", "空调"}, {"风扇", "风扇"}, {"窗帘", "窗帘"},
+        {"电视", "电视"}, {"冰箱", "冰箱"}, {"插座", "插座"},
+        {"门锁", "门锁"}, {"音箱", "音箱"}, {"灯", "灯"},
+    };
+    extractEntity(text, kRooms, sizeof(kRooms) / sizeof(kRooms[0]), &command.room);
+    extractEntity(text, kDevices, sizeof(kDevices) / sizeof(kDevices[0]), &command.device);
 
-    if (contains(text, "空调")) command.device = "空调";
-    else if (contains(text, "灯")) command.device = "灯";
-
-    if (contains(text, "打开") || contains(text, "开启")) command.action = "TURN_ON";
-    else if (contains(text, "关闭") || contains(text, "关掉")) command.action = "TURN_OFF";
+    // Mode is deliberately retained as an unsupported action in this build.
+    // It must reach the validator as DEVICE_CONTROL, never degrade to chat.
+    if (contains(text, "制热") || contains(text, "制冷") ||
+        contains(text, "除湿") || contains(text, "送风")) {
+        command.action = "SET_MODE";
+    } else if (contains(text, "打开") || contains(text, "开启") || contains(text, "启动")) {
+        command.action = "TURN_ON";
+    } else if (contains(text, "关闭") || contains(text, "关掉")) {
+        command.action = "TURN_OFF";
+    }
     else if (contains(text, "设置") || contains(text, "设为") ||
-             contains(text, "调到") || contains(text, "调成")) command.action = "SET_TEMPERATURE";
+             contains(text, "调到") || contains(text, "调成") || contains(text, "切换")) {
+        command.action = "SET_TEMPERATURE";
+    }
 
     command.value = extractNumber(text);
     if (command.value && command.action.empty()) command.action = "SET_TEMPERATURE";
@@ -136,14 +176,20 @@ struct LocalDeviceControlMatch {
 bool hasControlVerb(const std::string& text) {
     return contains(text, "打开") || contains(text, "开启") || contains(text, "关闭") ||
            contains(text, "关掉") || contains(text, "设置") || contains(text, "设为") ||
-           contains(text, "调到") || contains(text, "调成");
+           contains(text, "调到") || contains(text, "调成") || contains(text, "切换") ||
+           contains(text, "启动");
+}
+
+bool isInformationalControlQuestion(const std::string& text) {
+    return contains(text, "怎么") || contains(text, "如何") ||
+           contains(text, "为什么") || contains(text, "是什么");
 }
 
 LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
     LocalDeviceControlMatch match;
     // A number alone is not an operation.  A supported command must contain a
     // declared action phrase, plus at least a room or a device anchor.
-    if (!hasControlVerb(text)) return match;
+    if (!hasControlVerb(text) || isInformationalControlQuestion(text)) return match;
 
     const auto parsed = parseDeviceCommand(text);
     if (!parsed || parsed->action.empty()) return match;

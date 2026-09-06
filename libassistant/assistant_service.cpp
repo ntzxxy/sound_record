@@ -52,6 +52,9 @@ std::string makeUnsupportedDeviceReply(const DeviceCommand& command) {
 
 std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
                                           const std::string& error) {
+    if (error == "unsupported_action") {
+        return command.room + command.device + "暂不支持该操作。";
+    }
     if (error == "light_temperature_unsupported") {
         return command.room + command.device + "不支持温度设置。";
     }
@@ -101,18 +104,32 @@ bool isMemorySemanticHint(const std::string& hint) {
 }
 
 bool hasDeviceWord(const std::string& text) {
-    return containsText(text, "空调") || containsText(text, "灯");
+    static constexpr const char* kDeviceWords[] = {
+        "空气净化器", "扫地机器人", "加湿器", "热水器", "洗衣机",
+        "空调", "风扇", "窗帘", "电视", "冰箱", "插座", "门锁", "音箱", "灯",
+    };
+    for (const char* device : kDeviceWords) {
+        if (containsText(text, device)) return true;
+    }
+    return false;
 }
 
 bool hasControlVerb(const std::string& text) {
     return containsText(text, "打开") || containsText(text, "开启") ||
            containsText(text, "关闭") || containsText(text, "关掉") ||
            containsText(text, "设置") || containsText(text, "设为") ||
-           containsText(text, "调到") || containsText(text, "调成");
+           containsText(text, "调到") || containsText(text, "调成") ||
+           containsText(text, "切换") || containsText(text, "启动");
+}
+
+bool isInformationalControlQuestion(const std::string& text) {
+    return containsText(text, "怎么") || containsText(text, "如何") ||
+           containsText(text, "为什么") || containsText(text, "是什么");
 }
 
 bool looksLikeDeviceControlText(const std::string& text) {
-    return hasDeviceWord(text) && hasControlVerb(text) && !isPreferenceMemoryText(text);
+    return hasDeviceWord(text) && hasControlVerb(text) &&
+           !isInformationalControlQuestion(text) && !isPreferenceMemoryText(text);
 }
 
 bool hasAnyDeviceSlot(const DeviceCommand& command) {
@@ -223,20 +240,59 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
         command.room = "卫生间";
     } else if (containsText(text, "厕所")) {
         command.room = "卫生间";
+    } else if (containsText(text, "阳台")) {
+        command.room = "阳台";
+    } else if (containsText(text, "书房")) {
+        command.room = "书房";
+    } else if (containsText(text, "餐厅")) {
+        command.room = "餐厅";
+    } else if (containsText(text, "儿童房")) {
+        command.room = "儿童房";
+    } else if (containsText(text, "玄关")) {
+        command.room = "玄关";
     }
 
-    if (containsText(text, "空调")) {
+    if (containsText(text, "空气净化器")) {
+        command.device = "空气净化器";
+    } else if (containsText(text, "扫地机器人")) {
+        command.device = "扫地机器人";
+    } else if (containsText(text, "加湿器")) {
+        command.device = "加湿器";
+    } else if (containsText(text, "热水器")) {
+        command.device = "热水器";
+    } else if (containsText(text, "洗衣机")) {
+        command.device = "洗衣机";
+    } else if (containsText(text, "空调")) {
         command.device = "空调";
+    } else if (containsText(text, "风扇")) {
+        command.device = "风扇";
+    } else if (containsText(text, "窗帘")) {
+        command.device = "窗帘";
+    } else if (containsText(text, "电视")) {
+        command.device = "电视";
+    } else if (containsText(text, "冰箱")) {
+        command.device = "冰箱";
+    } else if (containsText(text, "插座")) {
+        command.device = "插座";
+    } else if (containsText(text, "门锁")) {
+        command.device = "门锁";
+    } else if (containsText(text, "音箱")) {
+        command.device = "音箱";
     } else if (containsText(text, "灯")) {
         command.device = "灯";
     }
 
-    if (containsText(text, "打开") || containsText(text, "开启")) {
+    if (containsText(text, "制热") || containsText(text, "制冷") ||
+        containsText(text, "除湿") || containsText(text, "送风")) {
+        command.action = "SET_MODE";
+    } else if (containsText(text, "打开") || containsText(text, "开启") ||
+               containsText(text, "启动")) {
         command.action = "TURN_ON";
     } else if (containsText(text, "关闭") || containsText(text, "关掉")) {
         command.action = "TURN_OFF";
     } else if (containsText(text, "设置") || containsText(text, "设为") ||
                containsText(text, "调到") || containsText(text, "调成") ||
+               containsText(text, "切换") ||
                containsText(text, "温度")) {
         command.action = "SET_TEMPERATURE";
     }

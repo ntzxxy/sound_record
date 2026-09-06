@@ -485,6 +485,18 @@ int main() {
         const auto full_control = router.analyze("打开客厅的灯");
         CHECK(full_control.status == LocalRouteStatus::FastPath);
         CHECK(full_control.matched_rule == "device_control_full_match");
+        const auto unregistered_control = router.analyze("请打开阳台风扇。");
+        CHECK(unregistered_control.status == LocalRouteStatus::FastPath);
+        CHECK(unregistered_control.intent.intent == IntentType::DeviceControl);
+        CHECK(unregistered_control.intent.device_command);
+        CHECK(unregistered_control.intent.device_command->room == "阳台");
+        CHECK(unregistered_control.intent.device_command->device == "风扇");
+        const auto unsupported_action = router.analyze("让卧室空调切换到制热模式。");
+        CHECK(unsupported_action.status == LocalRouteStatus::FastPath);
+        CHECK(unsupported_action.intent.intent == IntentType::DeviceControl);
+        CHECK(unsupported_action.intent.device_command);
+        CHECK(unsupported_action.intent.device_command->action == "SET_MODE");
+        CHECK(router.analyze("风扇怎么打开？").status == LocalRouteStatus::Chat);
         const auto complex_control = router.analyze("把客厅的灯设置成暖光");
         CHECK(complex_control.status == LocalRouteStatus::SemanticFallback);
         CHECK(complex_control.semantic_hint == "complex_device_control");
@@ -516,6 +528,25 @@ int main() {
         CHECK(!opened.call_llm);
         CHECK(opened.intent_latency_ms == 0);
         CHECK(opened.device_command);
+
+        // Explicit control semantics must survive an unknown entity/action so
+        // validation can reject it safely instead of treating it as chat.
+        ServiceResult missing_device = service.process("请打开阳台风扇。");
+        CHECK(missing_device.task_type == IntentType::DeviceControl);
+        CHECK(!missing_device.call_llm);
+        CHECK(!missing_device.device_command);
+        CHECK(missing_device.fixed_reply.find("当前没有找到阳台风扇") != std::string::npos);
+
+        ServiceResult unsupported_mode = service.process("让卧室空调切换到制热模式。");
+        CHECK(unsupported_mode.task_type == IntentType::DeviceControl);
+        CHECK(!unsupported_mode.call_llm);
+        CHECK(!unsupported_mode.device_command);
+        CHECK(unsupported_mode.fixed_reply.find("卧室空调暂不支持") != std::string::npos);
+
+        ServiceResult informational = service.process("风扇怎么打开？");
+        CHECK(informational.task_type == IntentType::GeneralChat);
+        CHECK(informational.call_llm);
+        CHECK(!informational.device_command);
 
         ServiceResult invalid = service.process("把客厅灯设置为二十度");
         CHECK(invalid.task_type == IntentType::DeviceControl);
