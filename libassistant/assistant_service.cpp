@@ -80,6 +80,12 @@ std::string makeLocalFaultReply(const DeviceEvent& event) {
            "故障：" + event.description + "。";
 }
 
+std::string noBusinessActionContext() {
+    return "【业务动作边界】\n"
+           "- 本轮没有任何设备、故障记录或记忆写入处理器成功执行。"
+           "不得声称已经打开、关闭、设置、记录、保存或记住任何业务数据。\n";
+}
+
 bool containsText(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
 }
@@ -115,9 +121,9 @@ bool hasDeviceWord(const std::string& text) {
 }
 
 bool hasControlVerb(const std::string& text) {
-    return containsText(text, "打开") || containsText(text, "开启") ||
-           containsText(text, "关闭") || containsText(text, "关掉") ||
-           containsText(text, "设置") || containsText(text, "设为") ||
+    return containsText(text, "打开") || containsText(text, "开启") || containsText(text, "开机") ||
+           containsText(text, "关闭") || containsText(text, "关掉") || containsText(text, "关机") ||
+           containsText(text, "设置") || containsText(text, "设为") || containsText(text, "设成") ||
            containsText(text, "调到") || containsText(text, "调成") ||
            containsText(text, "切换") || containsText(text, "启动");
 }
@@ -125,6 +131,60 @@ bool hasControlVerb(const std::string& text) {
 bool isInformationalControlQuestion(const std::string& text) {
     return containsText(text, "怎么") || containsText(text, "如何") ||
            containsText(text, "为什么") || containsText(text, "是什么");
+}
+
+bool isExecutionSuppressedControlText(const std::string& text) {
+    const bool explicit_non_execution = containsText(text, "不要执行") ||
+                                        containsText(text, "不执行") ||
+                                        containsText(text, "先别") ||
+                                        containsText(text, "别执行") ||
+                                        containsText(text, "保持当前状态") ||
+                                        containsText(text, "保持原样");
+    const bool quoted_or_meta_command = containsText(text, "复述") ||
+                                        containsText(text, "举例") ||
+                                        containsText(text, "假设") ||
+                                        containsText(text, "只是台词") ||
+                                        ((containsText(text, "“") || containsText(text, "\"") ||
+                                          containsText(text, "'")) &&
+                                         containsText(text, "不要"));
+    return explicit_non_execution || quoted_or_meta_command;
+}
+
+std::string quotedText(const std::string& text) {
+    const std::size_t begin = text.find("“");
+    if (begin != std::string::npos) {
+        const std::size_t end = text.find("”", begin + std::string("“").size());
+        if (end != std::string::npos) {
+            return text.substr(begin + std::string("“").size(),
+                               end - begin - std::string("“").size());
+        }
+    }
+    return "";
+}
+
+std::string nonExecutionControlReply(const std::string& text) {
+    if (containsText(text, "复述")) {
+        const std::string quoted = quotedText(text);
+        if (!quoted.empty()) return quoted;
+    }
+    return "好的，保持当前设备状态，不执行操作。";
+}
+
+bool needsTemperatureClarification(const std::string& text) {
+    const bool relative_without_baseline = containsText(text, "比当前") &&
+                                           (containsText(text, "低") || containsText(text, "高"));
+    const bool unit_ambiguous = (containsText(text, "摄氏") || containsText(text, "华氏") ||
+                                 containsText(text, "温标")) &&
+                                (containsText(text, "没确定") || containsText(text, "未确定") ||
+                                 containsText(text, "不确定"));
+    return relative_without_baseline || unit_ambiguous;
+}
+
+std::string makeTemperatureClarification(const std::string& text) {
+    if (containsText(text, "比当前")) {
+        return "请先告诉我当前空调温度，再决定调高或调低多少度。";
+    }
+    return "请先确认温度单位是摄氏还是华氏，确认前不会执行设置。";
 }
 
 bool looksLikeDeviceControlText(const std::string& text) {
@@ -135,6 +195,15 @@ bool looksLikeDeviceControlText(const std::string& text) {
 bool hasAnyDeviceSlot(const DeviceCommand& command) {
     return !command.room.empty() || !command.device.empty() ||
            !command.action.empty() || command.value.has_value();
+}
+
+bool isExcludedDeviceMention(const std::string& text, const std::string& device) {
+    if (device.empty()) return false;
+    const std::size_t device_pos = text.find(device);
+    if (device_pos == std::string::npos) return false;
+    const std::size_t ignored_pos = text.find("不用管", device_pos + device.size());
+    if (ignored_pos == std::string::npos) return false;
+    return ignored_pos - device_pos <= device.size() + std::string("不用管").size() + 6;
 }
 
 bool hasSlot(const std::vector<std::string>& slots, const std::string& slot) {
@@ -282,16 +351,19 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
         command.device = "灯";
     }
 
+    const bool asks_power_on = containsText(text, "打开") || containsText(text, "开启") ||
+                               containsText(text, "启动") || containsText(text, "开机");
+    const bool asks_power_off = containsText(text, "关闭") || containsText(text, "关掉") ||
+                                containsText(text, "关机");
     if (containsText(text, "制热") || containsText(text, "制冷") ||
         containsText(text, "除湿") || containsText(text, "送风")) {
         command.action = "SET_MODE";
-    } else if (containsText(text, "打开") || containsText(text, "开启") ||
-               containsText(text, "启动")) {
+    } else if (asks_power_on && !asks_power_off) {
         command.action = "TURN_ON";
-    } else if (containsText(text, "关闭") || containsText(text, "关掉")) {
+    } else if (asks_power_off && !asks_power_on) {
         command.action = "TURN_OFF";
     } else if (containsText(text, "设置") || containsText(text, "设为") ||
-               containsText(text, "调到") || containsText(text, "调成") ||
+               containsText(text, "设成") || containsText(text, "调到") || containsText(text, "调成") ||
                containsText(text, "切换") ||
                containsText(text, "温度")) {
         command.action = "SET_TEMPERATURE";
@@ -505,8 +577,13 @@ ServiceResult AssistantService::process(const std::string& user_input) {
     // Continue a known business turn before considering either the local parser
     // or the LLM. A new explicit business request must not be consumed as a
     // slot value for an unrelated pending device command.
+    const bool is_partial_control_continuation =
+        local.status == LocalRouteStatus::FastPath &&
+        local.intent.intent == IntentType::DeviceControl &&
+        local.intent.device_command && local.intent.device_command->room.empty();
     const bool interrupts_pending =
-        local.status == LocalRouteStatus::FastPath || isMemorySemanticHint(local.semantic_hint);
+        (local.status == LocalRouteStatus::FastPath && !is_partial_control_continuation) ||
+        isMemorySemanticHint(local.semantic_hint);
     if (pending_device_command_ && interrupts_pending) {
         pending_device_command_.reset();
         pending_device_turns_remaining_ = 0;
@@ -583,6 +660,20 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
+    // This guard is intentionally before deterministic intent correction and
+    // pending-slot merge: an explicit non-execution mention of a command must
+    // never reach the device handler merely because it contains control words.
+    if (hasDeviceWord(user_input) && hasControlVerb(user_input) &&
+        isExecutionSuppressedControlText(user_input)) {
+        pending_device_command_.reset();
+        pending_device_turns_remaining_ = 0;
+        result.task_type = IntentType::GeneralChat;
+        result.call_llm = false;
+        result.fixed_reply = nonExecutionControlReply(user_input);
+        std::cout << "[ExecutionGuard] blocked_non_execution_control" << std::endl;
+        return result;
+    }
+
     const bool can_force_device_control =
         intent.intent == IntentType::GeneralChat ||
         intent.intent == IntentType::DeviceControl ||
@@ -625,6 +716,10 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             supplement = inferred_command;
         }
 
+        if (supplement && isExcludedDeviceMention(user_input, supplement->device)) {
+            supplement->device.clear();
+        }
+
         if (supplement && hasAnyDeviceSlot(*supplement)) {
             DeviceCommand merged = mergeDeviceCommand(*pending_device_command_, *supplement);
             std::vector<std::string> missing = missingDeviceSlots(merged);
@@ -662,6 +757,7 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             if (result.runtime_context.empty() && intent.include_recent_memory_context) {
                 result.runtime_context = context_builder_.buildRecentMemoryContext(memory_store_, 3);
             }
+            result.runtime_context += noBusinessActionContext();
             result.call_llm = true;
             break;
         }
@@ -672,6 +768,14 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
                 result.call_llm = false;
                 result.fixed_reply = defaultClarification();
                 std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
+                break;
+            }
+
+            if (needsTemperatureClarification(user_input)) {
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = makeTemperatureClarification(user_input);
+                std::cout << "[DeviceCommandInvalid] error=ambiguous_temperature" << std::endl;
                 break;
             }
 
@@ -728,6 +832,10 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
 
             if (!event_log_.append(event)) {
                 std::cerr << kLogPrefix << " device_event_save=FAIL" << std::endl;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = "故障记录保存失败，请稍后再试。";
+                break;
             }
             result.call_llm = !intent.local_route;
             result.device_event = event;
@@ -765,6 +873,10 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             memory_store_.upsert(item);
             if (!memory_store_.save()) {
                 std::cerr << kLogPrefix << " memory_save=FAIL" << std::endl;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = "记忆保存失败，请稍后再试。";
+                break;
             }
             result.call_llm = false;
             result.fixed_reply = intent.response_text.empty()

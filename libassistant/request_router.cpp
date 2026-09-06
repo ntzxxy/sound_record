@@ -136,15 +136,19 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
 
     // Mode is deliberately retained as an unsupported action in this build.
     // It must reach the validator as DEVICE_CONTROL, never degrade to chat.
+    const bool asks_power_on = contains(text, "打开") || contains(text, "开启") ||
+                               contains(text, "启动") || contains(text, "开机");
+    const bool asks_power_off = contains(text, "关闭") || contains(text, "关掉") ||
+                                contains(text, "关机");
     if (contains(text, "制热") || contains(text, "制冷") ||
         contains(text, "除湿") || contains(text, "送风")) {
         command.action = "SET_MODE";
-    } else if (contains(text, "打开") || contains(text, "开启") || contains(text, "启动")) {
+    } else if (asks_power_on && !asks_power_off) {
         command.action = "TURN_ON";
-    } else if (contains(text, "关闭") || contains(text, "关掉")) {
+    } else if (asks_power_off && !asks_power_on) {
         command.action = "TURN_OFF";
     }
-    else if (contains(text, "设置") || contains(text, "设为") ||
+    else if (contains(text, "设置") || contains(text, "设为") || contains(text, "设成") ||
              contains(text, "调到") || contains(text, "调成") || contains(text, "切换")) {
         command.action = "SET_TEMPERATURE";
     }
@@ -174,9 +178,10 @@ struct LocalDeviceControlMatch {
 };
 
 bool hasControlVerb(const std::string& text) {
-    return contains(text, "打开") || contains(text, "开启") || contains(text, "关闭") ||
-           contains(text, "关掉") || contains(text, "设置") || contains(text, "设为") ||
-           contains(text, "调到") || contains(text, "调成") || contains(text, "切换") ||
+    return contains(text, "打开") || contains(text, "开启") || contains(text, "开机") ||
+           contains(text, "关闭") || contains(text, "关掉") || contains(text, "关机") ||
+           contains(text, "设置") || contains(text, "设为") ||
+           contains(text, "设成") || contains(text, "调到") || contains(text, "调成") || contains(text, "切换") ||
            contains(text, "启动");
 }
 
@@ -258,7 +263,7 @@ std::optional<MemoryQuery> parseExactLocationQuery(const std::string& text) {
     for (const char* noise : {"我的", "我", "请问", "请", "放"}) eraseAll(&subject, noise);
     subject = trimPunctuation(subject);
     if (subject.empty()) return std::nullopt;
-    return MemoryQuery{subject, "位置", "", ""};
+    return MemoryQuery{subject, "位置", "", "", ""};
 }
 
 // Preference recall has a small, stable vocabulary in the supported Chinese
@@ -279,9 +284,34 @@ std::optional<MemoryQuery> parsePreferenceQuery(const std::string& text) {
     return query;
 }
 
+std::optional<MemoryQuery> parseMemoryQueryCandidate(const std::string& text) {
+    const bool asks_for_fact = contains(text, "什么") || contains(text, "哪个") ||
+                               contains(text, "叫什么") || contains(text, "哪种") ||
+                               contains(text, "哪里") || contains(text, "怎么做") ||
+                               contains(text, "写在前面") || contains(text, "先拼");
+    const bool refers_to_user_history = contains(text, "我的") || contains(text, "我家") ||
+                                        contains(text, "我给") || contains(text, "我通常") ||
+                                        contains(text, "我习惯") || contains(text, "按我的") ||
+                                        contains(text, "之前记录") || contains(text, "已保存") ||
+                                        contains(text, "想不起来");
+    if (!asks_for_fact || !refers_to_user_history) return std::nullopt;
+
+    MemoryQuery query;
+    query.query_text = text;
+    if (contains(text, "叫") || contains(text, "名字") || contains(text, "昵称")) {
+        query.attribute = "名称";
+    } else if (contains(text, "前面") || contains(text, "顺序") ||
+               contains(text, "习惯") || contains(text, "先拼")) {
+        query.attribute = "习惯";
+    } else if (contains(text, "位置") || contains(text, "哪里")) {
+        query.attribute = "位置";
+    }
+    return query;
+}
+
 bool isQueryVerb(const std::string& text) {
     return contains(text, "查看") || contains(text, "查询") || contains(text, "列出") ||
-           contains(text, "有哪些") || contains(text, "有哪");
+           contains(text, "有哪些") || contains(text, "有哪") || contains(text, "找出");
 }
 
 std::optional<RecordQuery> parseRecordQuery(const std::string& text) {
@@ -297,7 +327,11 @@ std::optional<DeviceEvent> parseFaultRecord(const std::string& text) {
     if (!(contains(text, "记录") || contains(text, "报告"))) return std::nullopt;
     const bool has_fault = contains(text, "不制冷") || contains(text, "异响") ||
                            contains(text, "闪烁") || contains(text, "漏水") ||
-                           contains(text, "故障") || contains(text, "异常");
+                           contains(text, "故障") || contains(text, "异常") ||
+                           contains(text, "不亮") || contains(text, "没反应") ||
+                           contains(text, "失灵") || contains(text, "卡住") ||
+                           contains(text, "不摆动") || contains(text, "嗡嗡") ||
+                           contains(text, "不工作") || contains(text, "坏了");
     if (!has_fault) return std::nullopt;
     const auto command = parseDeviceCommand(text);
     if (!command || command->device.empty()) return std::nullopt;
@@ -338,7 +372,9 @@ bool isAmbiguousBulkControl(const std::string& text) {
 
 bool hasFaultSymptom(const std::string& text) {
     return contains(text, "不制冷") || contains(text, "异响") || contains(text, "闪烁") ||
-           contains(text, "漏水") || contains(text, "故障") || contains(text, "异常") ||
+                           contains(text, "漏水") || contains(text, "故障") || contains(text, "异常") ||
+           contains(text, "不亮") || contains(text, "没反应") || contains(text, "失灵") ||
+           contains(text, "卡住") || contains(text, "不摆动") || contains(text, "嗡嗡") ||
            contains(text, "不工作") || contains(text, "坏了");
 }
 
@@ -398,13 +434,13 @@ std::string semanticCandidateHint(const std::string& text) {
 
 std::optional<MemoryQuery> chatMemoryContextQuery(const std::string& text) {
     if (contains(text, "阅读") || contains(text, "看书")) {
-        return MemoryQuery{"阅读", "", "阅读", ""};
+        return MemoryQuery{"阅读", "", "阅读", "", ""};
     }
     if (contains(text, "灯光") || contains(text, "照明") || contains(text, "刺眼")) {
-        return MemoryQuery{"", "偏好", "", ""};
+        return MemoryQuery{"", "偏好", "", "", ""};
     }
     if (contains(text, "偏好") || contains(text, "习惯")) {
-        return MemoryQuery{"", "偏好", "", ""};
+        return MemoryQuery{"", "偏好", "", "", ""};
     }
     return std::nullopt;
 }
@@ -478,6 +514,13 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return fastResult(std::move(intent), "preference_query");
     }
 
+    if (const auto query = parseMemoryQueryCandidate(input)) {
+        IntentResult intent;
+        intent.intent = IntentType::MemoryQuery;
+        intent.memory_query = *query;
+        return fastResult(std::move(intent), "memory_query_candidate");
+    }
+
     const std::string candidate_hint = semanticCandidateHint(input);
     if (!candidate_hint.empty()) {
         analysis.status = LocalRouteStatus::SemanticFallback;
@@ -493,6 +536,19 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         analysis.matched_rule = "explicit_memory_write";
         analysis.semantic_hint = "explicit_memory_write";
         return analysis;
+    }
+
+    // This is an incomplete but explicit device operation. It carries enough
+    // business state for the validator/FSM to ask only for the missing action.
+    if ((contains(input, "操作") || contains(input, "控制"))) {
+        const auto command = parseDeviceCommand(input);
+        if (command && !command->room.empty() && !command->device.empty() &&
+            command->action.empty()) {
+            IntentResult intent;
+            intent.intent = IntentType::DeviceControl;
+            intent.device_command = *command;
+            return fastResult(std::move(intent), "device_control_missing_action");
+        }
     }
 
     if (isAmbiguousBulkControl(input)) {

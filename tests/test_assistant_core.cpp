@@ -497,6 +497,13 @@ int main() {
         CHECK(unsupported_action.intent.device_command);
         CHECK(unsupported_action.intent.device_command->action == "SET_MODE");
         CHECK(router.analyze("风扇怎么打开？").status == LocalRouteStatus::Chat);
+        const auto generic_memory_query = router.analyze("我的玄凤鹦鹉现在叫什么？");
+        CHECK(generic_memory_query.status == LocalRouteStatus::FastPath);
+        CHECK(generic_memory_query.intent.intent == IntentType::MemoryQuery);
+        CHECK(generic_memory_query.intent.memory_query);
+        CHECK(generic_memory_query.intent.memory_query->attribute == "名称");
+        CHECK(router.analyze("我要操作客厅灯，但还没决定是开还是关。").status ==
+              LocalRouteStatus::FastPath);
         const auto complex_control = router.analyze("把客厅的灯设置成暖光");
         CHECK(complex_control.status == LocalRouteStatus::SemanticFallback);
         CHECK(complex_control.semantic_hint == "complex_device_control");
@@ -548,6 +555,38 @@ int main() {
         CHECK(informational.call_llm);
         CHECK(!informational.device_command);
 
+        ServiceResult quoted_command =
+            service.process("请原样复述引号里的话：“关闭卧室灯。”这只是台词，不要执行。");
+        CHECK(quoted_command.task_type == IntentType::GeneralChat);
+        CHECK(!quoted_command.call_llm);
+        CHECK(quoted_command.fixed_reply == "关闭卧室灯。");
+        CHECK(!quoted_command.device_command);
+
+        ServiceResult suppressed_command =
+            service.process("先别关闭卧室空调，请保持当前状态。");
+        CHECK(suppressed_command.task_type == IntentType::GeneralChat);
+        CHECK(!suppressed_command.call_llm);
+        CHECK(!suppressed_command.device_command);
+
+        ServiceResult relative_temperature =
+            service.process("把卧室空调设成比当前低两度，但还没有当前温度。");
+        CHECK(relative_temperature.task_type == IntentType::Clarify);
+        CHECK(!relative_temperature.call_llm);
+        CHECK(!relative_temperature.device_command);
+
+        ServiceResult ambiguous_unit =
+            service.process("客厅空调设为二十度，但还没确定摄氏还是华氏。");
+        CHECK(ambiguous_unit.task_type == IntentType::Clarify);
+        CHECK(!ambiguous_unit.call_llm);
+        CHECK(!ambiguous_unit.device_command);
+
+        ServiceResult fault_record =
+            service.process("请记录，卧室灯持续发出嗡嗡声，亮度没有变化。");
+        CHECK(fault_record.task_type == IntentType::DeviceFault);
+        CHECK(!fault_record.call_llm);
+        CHECK(fault_record.device_event);
+        CHECK(service.eventSnapshot().size() == 1);
+
         ServiceResult invalid = service.process("把客厅灯设置为二十度");
         CHECK(invalid.task_type == IntentType::DeviceControl);
         CHECK(!invalid.call_llm);
@@ -580,7 +619,7 @@ int main() {
 
         IntentResult memory_aware_chat;
         memory_aware_chat.intent = IntentType::GeneralChat;
-        memory_aware_chat.memory_context_query = MemoryQuery{"钥匙", "位置", "", ""};
+        memory_aware_chat.memory_context_query = MemoryQuery{"钥匙", "位置", "", "", ""};
         ServiceResult contextual = service.processAnalyzed("钥匙在哪儿？", memory_aware_chat);
         CHECK(contextual.call_llm);
         CHECK(contextual.runtime_context.find("客厅鞋柜第二层") != std::string::npos);
@@ -782,6 +821,62 @@ int main() {
     resetTestFile();
 
     {
+        MemoryStore store(kTestMemoryPath);
+        CHECK(store.load());
+        store.upsert(makeItem("HABIT", "照片文件命名", "习惯", "先写日期，再写地点", 100));
+        store.upsert(makeItem("HABIT", "拼图", "步骤习惯", "先拼边框，再处理中央图案", 101));
+
+        MemoryQuery puzzle_query;
+        puzzle_query.attribute = "习惯";
+        puzzle_query.query_text = "边框刚刚拼完，按我的习惯下一步做什么？";
+        const auto puzzle_matches = store.selectRelevant(puzzle_query, 1);
+        CHECK(puzzle_matches.size() == 1);
+        CHECK(puzzle_matches[0].subject == "拼图");
+
+        MemoryQuery no_match_query;
+        no_match_query.attribute = "名称";
+        no_match_query.query_text = "我给公交卡取过什么昵称？";
+        CHECK(store.selectRelevant(no_match_query, 1).empty());
+    }
+
+    resetTestFile();
+
+    {
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult write;
+        write.intent = IntentType::MemoryWrite;
+        write.memory = makeItem("USER_PREFERENCE", "玄凤鹦鹉", "名称", "米粒", 0);
+        CHECK(service.processAnalyzed("玄凤鹦鹉现在叫米粒", write).stored_memory);
+
+        ServiceResult recalled = service.process("我的玄凤鹦鹉现在叫什么？");
+        CHECK(recalled.task_type == IntentType::MemoryQuery);
+        CHECK(!recalled.call_llm);
+        CHECK(recalled.fixed_reply.find("米粒") != std::string::npos);
+
+        ServiceResult clarify = service.process("我要操作客厅灯，但还没决定是开还是关。");
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+        ServiceResult completed = service.process("先打开吧。");
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "living_room_light");
+
+        ServiceResult second_clarify =
+            service.process("请操作卧室空调，开机还是关机我下一句再告诉你。");
+        CHECK(second_clarify.task_type == IntentType::Clarify);
+        CHECK(!second_clarify.call_llm);
+        ServiceResult second_completed = service.process("关机，灯不用管。");
+        CHECK(second_completed.task_type == IntentType::DeviceControl);
+        CHECK(!second_completed.call_llm);
+        CHECK(second_completed.device_command);
+        CHECK(second_completed.device_command->device_id == "bedroom_ac");
+        CHECK(second_completed.device_command->action == "TURN_OFF");
+    }
+
+    resetTestFile();
+
+    {
         // A global lighting preference and a reading-specific one must coexist;
         // the scene-specific item should win when the query carries a scene.
         MemoryStore store(kTestMemoryPath);
@@ -794,7 +889,7 @@ int main() {
         reading.confidence = 95;
         store.upsert(global);
         store.upsert(reading);
-        MemoryQuery reading_query{"阅读", "偏好", "阅读", ""};
+        MemoryQuery reading_query{"阅读", "偏好", "阅读", "", ""};
         const auto matches = store.selectRelevant(reading_query, 2);
         CHECK(matches.size() == 2);
         CHECK(matches.front().condition == "阅读时");

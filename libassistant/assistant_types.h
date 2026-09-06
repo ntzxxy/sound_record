@@ -66,6 +66,9 @@ struct MemoryQuery {
     std::string attribute;
     std::string condition;
     std::string scope;
+    // Original question for local lexical retrieval. It is transient routing
+    // context and is deliberately never persisted as a memory field.
+    std::string query_text;
 };
 
 struct MemoryDeleteRequest {

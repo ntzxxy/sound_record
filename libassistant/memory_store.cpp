@@ -60,6 +60,34 @@ std::vector<std::string> splitTsv(const std::string& line) {
     return fields;
 }
 
+int sharedChineseBigrams(const std::string& question, const std::string& field) {
+    if (question.empty() || field.empty()) return 0;
+    static const std::vector<std::string> kStopBigrams = {
+        "我的", "我们", "之前", "现在", "什么", "哪个", "怎么", "请问",
+        "通常", "习惯", "喜欢", "记录", "告诉", "一下",
+    };
+
+    int matches = 0;
+    std::vector<std::string> seen;
+    for (std::size_t i = 0; i + 5 < question.size(); ++i) {
+        const unsigned char first = static_cast<unsigned char>(question[i]);
+        const unsigned char second = static_cast<unsigned char>(question[i + 3]);
+        // Chinese BMP characters are normally encoded as three bytes in the
+        // supported input. Comparing two-character phrases avoids one-word
+        // category-only matches such as every HABIT being considered relevant.
+        if (first < 0xE0 || first > 0xEF || second < 0xE0 || second > 0xEF) continue;
+        const std::string phrase = question.substr(i, 6);
+        if (std::find(kStopBigrams.begin(), kStopBigrams.end(), phrase) !=
+            kStopBigrams.end()) {
+            continue;
+        }
+        if (std::find(seen.begin(), seen.end(), phrase) != seen.end()) continue;
+        seen.push_back(phrase);
+        if (field.find(phrase) != std::string::npos) ++matches;
+    }
+    return matches;
+}
+
 int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
     int score = 0;
     if (!query.subject.empty() && item.subject == query.subject) score += 8;
@@ -77,7 +105,22 @@ int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
     if (!query.scope.empty() && item.scope == query.scope) score += 5;
     else if (!query.scope.empty() &&
              (item.scope.find(query.scope) != std::string::npos ||
-              query.scope.find(item.scope) != std::string::npos)) score += 2;
+             query.scope.find(item.scope) != std::string::npos)) score += 2;
+
+    if (!query.query_text.empty()) {
+        int lexical_score = 0;
+        lexical_score += 4 * sharedChineseBigrams(query.query_text, item.subject);
+        lexical_score += 3 * sharedChineseBigrams(query.query_text, item.attribute);
+        lexical_score += 3 * sharedChineseBigrams(query.query_text, item.value);
+        lexical_score += 2 * sharedChineseBigrams(query.query_text, item.condition);
+        lexical_score += 2 * sharedChineseBigrams(query.query_text, item.context);
+
+        // A generic memory question must name at least one meaningful concept
+        // present in the candidate. Attribute/category agreement alone is too
+        // weak and previously returned an unrelated habit.
+        if (lexical_score < 3) return 0;
+        score += lexical_score;
+    }
     return score;
 }
 
