@@ -60,6 +60,34 @@ std::vector<std::string> splitTsv(const std::string& line) {
     return fields;
 }
 
+int sharedChineseBigrams(const std::string& question, const std::string& field) {
+    if (question.empty() || field.empty()) return 0;
+    static const std::vector<std::string> kStopBigrams = {
+        "我的", "我们", "之前", "现在", "什么", "哪个", "怎么", "请问",
+        "通常", "习惯", "喜欢", "记录", "告诉", "一下",
+    };
+
+    int matches = 0;
+    std::vector<std::string> seen;
+    for (std::size_t i = 0; i + 5 < question.size(); ++i) {
+        const unsigned char first = static_cast<unsigned char>(question[i]);
+        const unsigned char second = static_cast<unsigned char>(question[i + 3]);
+        // Chinese BMP characters are normally encoded as three bytes in the
+        // supported input. Comparing two-character phrases avoids one-word
+        // category-only matches such as every HABIT being considered relevant.
+        if (first < 0xE0 || first > 0xEF || second < 0xE0 || second > 0xEF) continue;
+        const std::string phrase = question.substr(i, 6);
+        if (std::find(kStopBigrams.begin(), kStopBigrams.end(), phrase) !=
+            kStopBigrams.end()) {
+            continue;
+        }
+        if (std::find(seen.begin(), seen.end(), phrase) != seen.end()) continue;
+        seen.push_back(phrase);
+        if (field.find(phrase) != std::string::npos) ++matches;
+    }
+    return matches;
+}
+
 int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
     int score = 0;
     if (!query.subject.empty() && item.subject == query.subject) score += 8;
@@ -68,6 +96,31 @@ int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
 
     if (!query.attribute.empty() && item.attribute == query.attribute) score += 5;
     else if (!query.attribute.empty() && item.attribute.find(query.attribute) != std::string::npos) score += 2;
+
+    if (!query.condition.empty() && item.condition == query.condition) score += 8;
+    else if (!query.condition.empty() &&
+             (item.condition.find(query.condition) != std::string::npos ||
+              query.condition.find(item.condition) != std::string::npos)) score += 4;
+
+    if (!query.scope.empty() && item.scope == query.scope) score += 5;
+    else if (!query.scope.empty() &&
+             (item.scope.find(query.scope) != std::string::npos ||
+             query.scope.find(item.scope) != std::string::npos)) score += 2;
+
+    if (!query.query_text.empty()) {
+        int lexical_score = 0;
+        lexical_score += 4 * sharedChineseBigrams(query.query_text, item.subject);
+        lexical_score += 3 * sharedChineseBigrams(query.query_text, item.attribute);
+        lexical_score += 3 * sharedChineseBigrams(query.query_text, item.value);
+        lexical_score += 2 * sharedChineseBigrams(query.query_text, item.condition);
+        lexical_score += 2 * sharedChineseBigrams(query.query_text, item.context);
+
+        // A generic memory question must name at least one meaningful concept
+        // present in the candidate. Attribute/category agreement alone is too
+        // weak and previously returned an unrelated habit.
+        if (lexical_score < 3) return 0;
+        score += lexical_score;
+    }
     return score;
 }
 
@@ -98,6 +151,16 @@ bool MemoryStore::load() {
             item.updated_at = std::stoll(fields[4]);
         } catch (...) {
             item.updated_at = 0;
+        }
+        // Version 1 rows have five fields.  New metadata is appended, keeping
+        // existing board-side memory files readable without a migration.
+        if (fields.size() > 5) item.condition = fields[5];
+        if (fields.size() > 6) item.context = fields[6];
+        if (fields.size() > 7) item.time = fields[7];
+        if (fields.size() > 8) item.scope = fields[8];
+        if (fields.size() > 9) {
+            try { item.confidence = std::stoi(fields[9]); }
+            catch (...) { item.confidence = 100; }
         }
         if (!item.category.empty() && !item.subject.empty() &&
             !item.attribute.empty() && !item.value.empty()) {
@@ -137,7 +200,12 @@ bool MemoryStore::save() const {
                 << escapeField(item.subject) << '\t'
                 << escapeField(item.attribute) << '\t'
                 << escapeField(item.value) << '\t'
-                << item.updated_at << '\n';
+                << item.updated_at << '\t'
+                << escapeField(item.condition) << '\t'
+                << escapeField(item.context) << '\t'
+                << escapeField(item.time) << '\t'
+                << escapeField(item.scope) << '\t'
+                << item.confidence << '\n';
         }
         out.flush();
         if (!out.good()) return false;
@@ -158,7 +226,9 @@ void MemoryStore::upsert(const MemoryItem& item) {
     for (auto& existing : items_) {
         if (existing.category == item.category &&
             existing.subject == item.subject &&
-            existing.attribute == item.attribute) {
+            existing.attribute == item.attribute &&
+            existing.condition == item.condition &&
+            existing.scope == item.scope) {
             existing = item;
             return;
         }
@@ -191,6 +261,21 @@ std::size_t MemoryStore::removeMatching(const MemoryDeleteRequest& request) {
     return old_size - items_.size();
 }
 
+bool MemoryStore::removeExact(const MemoryItem& item) {
+    if (item.category.empty() || item.subject.empty() || item.attribute.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = std::find_if(items_.begin(), items_.end(), [&](const MemoryItem& existing) {
+        return existing.category == item.category &&
+               existing.subject == item.subject &&
+               existing.attribute == item.attribute &&
+               existing.condition == item.condition &&
+               existing.scope == item.scope;
+    });
+    if (found == items_.end()) return false;
+    items_.erase(found);
+    return true;
+}
+
 std::size_t MemoryStore::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto old_size = items_.size();
@@ -216,6 +301,16 @@ std::vector<MemoryItem> MemoryStore::selectRelevant(const MemoryQuery& query,
         if (result.size() >= max_items) break;
         result.push_back(item.second);
     }
+    return result;
+}
+
+std::vector<MemoryItem> MemoryStore::recent(std::size_t max_items) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<MemoryItem> result = items_;
+    std::sort(result.begin(), result.end(), [](const MemoryItem& a, const MemoryItem& b) {
+        return a.updated_at > b.updated_at;
+    });
+    if (result.size() > max_items) result.resize(max_items);
     return result;
 }
 

@@ -33,12 +33,18 @@ bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std:
 }
 
 bool MemoryItemValidator::validate(const MemoryItem& item, std::string* error) const {
-    if (item.category != "USER_PREFERENCE" && item.category != "OBJECT_LOCATION") {
+    if (item.category != "USER_PREFERENCE" && item.category != "OBJECT_LOCATION" &&
+        item.category != "HABIT" && item.category != "ROUTINE" &&
+        item.category != "DEVICE_PREFERENCE") {
         if (error) *error = "invalid_memory_category";
         return false;
     }
     if (item.subject.empty() || item.attribute.empty() || item.value.empty()) {
         if (error) *error = "missing_memory_slot";
+        return false;
+    }
+    if (item.confidence < 0 || item.confidence > 100) {
+        if (error) *error = "invalid_memory_confidence";
         return false;
     }
     return true;

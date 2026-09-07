@@ -11,7 +11,7 @@
 // 服务器配置（必须通过 main 的 --server 参数传入，run.sh 自动处理）
 int g_enable_upload = 0;
 const char *g_server_ip = NULL;  // 由 run.sh 传入
-int g_server_port = 8080;
+int g_server_port = 18080;
 
 static int fd = -1;
 

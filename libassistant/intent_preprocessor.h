@@ -11,7 +11,10 @@ namespace assistant {
 class IntentPreprocessor {
 public:
     bool initialize();
-    IntentResult analyze(const std::string& user_input);
+    // semantic_hint is a locally detected, untrusted candidate category.  It
+    // selects stricter extraction guidance but never supplies user facts.
+    IntentResult analyze(const std::string& user_input,
+                         const std::string& semantic_hint = "");
 
 private:
     IntentJsonParser parser_;

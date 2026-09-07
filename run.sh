@@ -3,7 +3,7 @@
 # 运行方式：直接 ./run.sh
 #
 # ==== 默认配置 ====
-SERVER_IP="10.88.175.138"   # PC 端 IP 地址
+SERVER_IP="${SERVER_IP:-10.88.175.138}"   # PC 端 IP 地址
 MIC_TYPE="usb"
 # =================
 
@@ -20,6 +20,6 @@ else
     sh ./mic_in_config_usb.sh
 fi
 
-echo "[run.sh] 目标服务器: ${SERVER_IP}:8080"
+echo "[run.sh] 目标服务器: ${SERVER_IP}:18080"
 echo "[run.sh] Starting: ./out $MIC_TYPE --server $SERVER_IP"
 ./out $MIC_TYPE --server "$SERVER_IP"

@@ -16,8 +16,9 @@ extern "C" {
 typedef void (*tts_callback_t)(const int16_t *samples, int n, float progress);
 
 /**
- * 初始化 TTS 引擎（加载 ONNX 模型）
- * @param model_dir 模型目录，需包含 model.onnx 和 tokens.txt
+ * 初始化 TTS 引擎。支持 sherpa-onnx VITS/Supertonic，以及
+ * Christina Qwen3-TTS（目录中包含两个 GGUF 和中英文 .spk 文件）。
+ * Qwen 后端通过 TTS_QWEN_CLI 指定 qwen3-tts-cli 的绝对路径。
  * @return 0 成功，-1 失败
  */
 int tts_init(const char *model_dir);

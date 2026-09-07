@@ -1,5 +1,6 @@
 #include "assistant_service.h"
 
+#include <algorithm>
 #include <cctype>
 #include <ctime>
 #include <cstdlib>
@@ -51,6 +52,9 @@ std::string makeUnsupportedDeviceReply(const DeviceCommand& command) {
 
 std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
                                           const std::string& error) {
+    if (error == "unsupported_action") {
+        return command.room + command.device + "暂不支持该操作。";
+    }
     if (error == "light_temperature_unsupported") {
         return command.room + command.device + "不支持温度设置。";
     }
@@ -58,6 +62,28 @@ std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
         return "空调温度只支持设置在16到30度之间。";
     }
     return "这个设备指令暂时不支持。";
+}
+
+std::string makeLocalMemoryQueryReply(const MemoryQuery& query,
+                                      const MemoryStore& store) {
+    const auto matches = store.selectRelevant(query, 1);
+    if (matches.empty()) return "没有找到相关记忆。";
+    const MemoryItem& item = matches.front();
+    if (item.category == "OBJECT_LOCATION") {
+        return item.subject + "在" + item.value + "。";
+    }
+    return item.subject + "的" + item.attribute + "是" + item.value + "。";
+}
+
+std::string makeLocalFaultReply(const DeviceEvent& event) {
+    return "已记录" + (event.room.empty() ? "" : event.room) + event.device +
+           "故障：" + event.description + "。";
+}
+
+std::string noBusinessActionContext() {
+    return "【业务动作边界】\n"
+           "- 本轮没有任何设备、故障记录或记忆写入处理器成功执行。"
+           "不得声称已经打开、关闭、设置、记录、保存或记住任何业务数据。\n";
 }
 
 bool containsText(const std::string& text, const std::string& needle) {
@@ -71,29 +97,113 @@ bool isCancelText(const std::string& text) {
 }
 
 bool isPreferenceMemoryText(const std::string& text) {
-    return containsText(text, "我喜欢") || containsText(text, "我习惯") ||
-           containsText(text, "以后默认") || containsText(text, "记住我") ||
-           containsText(text, "偏好");
+    return containsText(text, "喜欢") || containsText(text, "习惯") ||
+           containsText(text, "通常") || containsText(text, "一般") ||
+           containsText(text, "以后默认") || containsText(text, "记住") ||
+           containsText(text, "偏好") || containsText(text, "位置在");
+}
+
+bool isMemorySemanticHint(const std::string& hint) {
+    return hint == "explicit_memory_write" ||
+           hint == "implicit_preference_or_routine" ||
+           hint == "implicit_object_location";
 }
 
 bool hasDeviceWord(const std::string& text) {
-    return containsText(text, "空调") || containsText(text, "灯");
+    static constexpr const char* kDeviceWords[] = {
+        "空气净化器", "扫地机器人", "加湿器", "热水器", "洗衣机",
+        "空调", "风扇", "窗帘", "电视", "冰箱", "插座", "门锁", "音箱", "灯",
+    };
+    for (const char* device : kDeviceWords) {
+        if (containsText(text, device)) return true;
+    }
+    return false;
 }
 
 bool hasControlVerb(const std::string& text) {
-    return containsText(text, "打开") || containsText(text, "开启") ||
-           containsText(text, "关闭") || containsText(text, "关掉") ||
-           containsText(text, "设置") || containsText(text, "设为") ||
-           containsText(text, "调到") || containsText(text, "调成");
+    return containsText(text, "打开") || containsText(text, "开启") || containsText(text, "开机") ||
+           containsText(text, "关闭") || containsText(text, "关掉") || containsText(text, "关机") ||
+           containsText(text, "设置") || containsText(text, "设为") || containsText(text, "设成") ||
+           containsText(text, "调到") || containsText(text, "调成") ||
+           containsText(text, "切换") || containsText(text, "启动");
+}
+
+bool isInformationalControlQuestion(const std::string& text) {
+    return containsText(text, "怎么") || containsText(text, "如何") ||
+           containsText(text, "为什么") || containsText(text, "是什么");
+}
+
+bool isExecutionSuppressedControlText(const std::string& text) {
+    const bool explicit_non_execution = containsText(text, "不要执行") ||
+                                        containsText(text, "不执行") ||
+                                        containsText(text, "先别") ||
+                                        containsText(text, "别执行") ||
+                                        containsText(text, "保持当前状态") ||
+                                        containsText(text, "保持原样");
+    const bool quoted_or_meta_command = containsText(text, "复述") ||
+                                        containsText(text, "举例") ||
+                                        containsText(text, "假设") ||
+                                        containsText(text, "只是台词") ||
+                                        ((containsText(text, "“") || containsText(text, "\"") ||
+                                          containsText(text, "'")) &&
+                                         containsText(text, "不要"));
+    return explicit_non_execution || quoted_or_meta_command;
+}
+
+std::string quotedText(const std::string& text) {
+    const std::size_t begin = text.find("“");
+    if (begin != std::string::npos) {
+        const std::size_t end = text.find("”", begin + std::string("“").size());
+        if (end != std::string::npos) {
+            return text.substr(begin + std::string("“").size(),
+                               end - begin - std::string("“").size());
+        }
+    }
+    return "";
+}
+
+std::string nonExecutionControlReply(const std::string& text) {
+    if (containsText(text, "复述")) {
+        const std::string quoted = quotedText(text);
+        if (!quoted.empty()) return quoted;
+    }
+    return "好的，保持当前设备状态，不执行操作。";
+}
+
+bool needsTemperatureClarification(const std::string& text) {
+    const bool relative_without_baseline = containsText(text, "比当前") &&
+                                           (containsText(text, "低") || containsText(text, "高"));
+    const bool unit_ambiguous = (containsText(text, "摄氏") || containsText(text, "华氏") ||
+                                 containsText(text, "温标")) &&
+                                (containsText(text, "没确定") || containsText(text, "未确定") ||
+                                 containsText(text, "不确定"));
+    return relative_without_baseline || unit_ambiguous;
+}
+
+std::string makeTemperatureClarification(const std::string& text) {
+    if (containsText(text, "比当前")) {
+        return "请先告诉我当前空调温度，再决定调高或调低多少度。";
+    }
+    return "请先确认温度单位是摄氏还是华氏，确认前不会执行设置。";
 }
 
 bool looksLikeDeviceControlText(const std::string& text) {
-    return hasDeviceWord(text) && hasControlVerb(text) && !isPreferenceMemoryText(text);
+    return hasDeviceWord(text) && hasControlVerb(text) &&
+           !isInformationalControlQuestion(text) && !isPreferenceMemoryText(text);
 }
 
 bool hasAnyDeviceSlot(const DeviceCommand& command) {
     return !command.room.empty() || !command.device.empty() ||
            !command.action.empty() || command.value.has_value();
+}
+
+bool isExcludedDeviceMention(const std::string& text, const std::string& device) {
+    if (device.empty()) return false;
+    const std::size_t device_pos = text.find(device);
+    if (device_pos == std::string::npos) return false;
+    const std::size_t ignored_pos = text.find("不用管", device_pos + device.size());
+    if (ignored_pos == std::string::npos) return false;
+    return ignored_pos - device_pos <= device.size() + std::string("不用管").size() + 6;
 }
 
 bool hasSlot(const std::vector<std::string>& slots, const std::string& slot) {
@@ -199,20 +309,62 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
         command.room = "卫生间";
     } else if (containsText(text, "厕所")) {
         command.room = "卫生间";
+    } else if (containsText(text, "阳台")) {
+        command.room = "阳台";
+    } else if (containsText(text, "书房")) {
+        command.room = "书房";
+    } else if (containsText(text, "餐厅")) {
+        command.room = "餐厅";
+    } else if (containsText(text, "儿童房")) {
+        command.room = "儿童房";
+    } else if (containsText(text, "玄关")) {
+        command.room = "玄关";
     }
 
-    if (containsText(text, "空调")) {
+    if (containsText(text, "空气净化器")) {
+        command.device = "空气净化器";
+    } else if (containsText(text, "扫地机器人")) {
+        command.device = "扫地机器人";
+    } else if (containsText(text, "加湿器")) {
+        command.device = "加湿器";
+    } else if (containsText(text, "热水器")) {
+        command.device = "热水器";
+    } else if (containsText(text, "洗衣机")) {
+        command.device = "洗衣机";
+    } else if (containsText(text, "空调")) {
         command.device = "空调";
+    } else if (containsText(text, "风扇")) {
+        command.device = "风扇";
+    } else if (containsText(text, "窗帘")) {
+        command.device = "窗帘";
+    } else if (containsText(text, "电视")) {
+        command.device = "电视";
+    } else if (containsText(text, "冰箱")) {
+        command.device = "冰箱";
+    } else if (containsText(text, "插座")) {
+        command.device = "插座";
+    } else if (containsText(text, "门锁")) {
+        command.device = "门锁";
+    } else if (containsText(text, "音箱")) {
+        command.device = "音箱";
     } else if (containsText(text, "灯")) {
         command.device = "灯";
     }
 
-    if (containsText(text, "打开") || containsText(text, "开启")) {
+    const bool asks_power_on = containsText(text, "打开") || containsText(text, "开启") ||
+                               containsText(text, "启动") || containsText(text, "开机");
+    const bool asks_power_off = containsText(text, "关闭") || containsText(text, "关掉") ||
+                                containsText(text, "关机");
+    if (containsText(text, "制热") || containsText(text, "制冷") ||
+        containsText(text, "除湿") || containsText(text, "送风")) {
+        command.action = "SET_MODE";
+    } else if (asks_power_on && !asks_power_off) {
         command.action = "TURN_ON";
-    } else if (containsText(text, "关闭") || containsText(text, "关掉")) {
+    } else if (asks_power_off && !asks_power_on) {
         command.action = "TURN_OFF";
     } else if (containsText(text, "设置") || containsText(text, "设为") ||
-               containsText(text, "调到") || containsText(text, "调成") ||
+               containsText(text, "设成") || containsText(text, "调到") || containsText(text, "调成") ||
+               containsText(text, "切换") ||
                containsText(text, "温度")) {
         command.action = "SET_TEMPERATURE";
     }
@@ -252,6 +404,71 @@ std::string makeSlotClarification(const DeviceCommand& command,
 std::string noMemoryContext() {
     return "【相关系统记忆】\n"
            "- 系统中没有找到与该问题相关的已存储信息。不得猜测或虚构。\n";
+}
+
+std::string memoryCategoryName(RecordType type) {
+    switch (type) {
+        case RecordType::UserPreference: return "用户偏好";
+        case RecordType::ObjectLocation: return "物品位置";
+        default: return "系统记忆";
+    }
+}
+
+std::string makeRecordListReply(RecordType type,
+                                std::vector<MemoryItem> memories,
+                                std::vector<DeviceEvent> events) {
+    constexpr std::size_t kMaxShownItems = 5;
+    std::sort(memories.begin(), memories.end(), [](const MemoryItem& a, const MemoryItem& b) {
+        return a.updated_at > b.updated_at;
+    });
+    std::sort(events.begin(), events.end(), [](const DeviceEvent& a, const DeviceEvent& b) {
+        return a.timestamp > b.timestamp;
+    });
+
+    auto make_memory_reply = [&](RecordType category) {
+        std::vector<MemoryItem> selected;
+        for (const auto& item : memories) {
+            if ((category == RecordType::UserPreference && item.category == "USER_PREFERENCE") ||
+                (category == RecordType::ObjectLocation && item.category == "OBJECT_LOCATION")) {
+                selected.push_back(item);
+            }
+        }
+        const std::string name = memoryCategoryName(category);
+        if (selected.empty()) return "目前没有已保存的" + name + "。";
+
+        std::string reply = "目前有" + std::to_string(selected.size()) + "条" + name + "：";
+        for (std::size_t i = 0; i < selected.size() && i < kMaxShownItems; ++i) {
+            const auto& item = selected[i];
+            reply += std::to_string(i + 1) + "." + item.subject + "：" + item.value + "；";
+        }
+        if (selected.size() > kMaxShownItems) reply += "其余请在记录中心查看。";
+        return reply;
+    };
+
+    if (type == RecordType::DeviceFault) {
+        if (events.empty()) return "目前没有已记录的设备故障。";
+        std::string reply = "目前有" + std::to_string(events.size()) + "条设备故障记录：";
+        for (std::size_t i = 0; i < events.size() && i < kMaxShownItems; ++i) {
+            const auto& event = events[i];
+            reply += std::to_string(i + 1) + "." + event.room + event.device + "：" +
+                     event.description + "；";
+        }
+        if (events.size() > kMaxShownItems) reply += "其余请在记录中心查看。";
+        return reply;
+    }
+    if (type == RecordType::UserPreference || type == RecordType::ObjectLocation) {
+        return make_memory_reply(type);
+    }
+
+    std::size_t preference_count = 0;
+    std::size_t location_count = 0;
+    for (const auto& item : memories) {
+        if (item.category == "USER_PREFERENCE") ++preference_count;
+        if (item.category == "OBJECT_LOCATION") ++location_count;
+    }
+    return "当前共有" + std::to_string(events.size()) + "条设备故障、" +
+           std::to_string(preference_count) + "条用户偏好和" +
+           std::to_string(location_count) + "条物品位置记录，可在记录中心查看详情。";
 }
 
 std::string defaultEventLogPath(const std::string& memory_path) {
@@ -355,7 +572,83 @@ bool AssistantService::initialize() {
 }
 
 ServiceResult AssistantService::process(const std::string& user_input) {
-    IntentResult intent = intent_preprocessor_.analyze(user_input);
+    const RequestAnalysis local = request_router_.analyze(user_input);
+
+    // Continue a known business turn before considering either the local parser
+    // or the LLM. A new explicit business request must not be consumed as a
+    // slot value for an unrelated pending device command.
+    const bool is_partial_control_continuation =
+        local.status == LocalRouteStatus::FastPath &&
+        local.intent.intent == IntentType::DeviceControl &&
+        local.intent.device_command && local.intent.device_command->room.empty();
+    const bool interrupts_pending =
+        (local.status == LocalRouteStatus::FastPath && !is_partial_control_continuation) ||
+        isMemorySemanticHint(local.semantic_hint);
+    if (pending_device_command_ && interrupts_pending) {
+        pending_device_command_.reset();
+        pending_device_turns_remaining_ = 0;
+        std::cout << "[PendingDeviceCommand] canceled_by_new_request" << std::endl;
+    } else if (pending_device_command_) {
+        IntentResult continuation;
+        continuation.intent = IntentType::GeneralChat;
+        continuation.local_route = true;
+        continuation.json_valid = true;
+        return processAnalyzed(user_input, continuation);
+    }
+
+    if (local.status == LocalRouteStatus::FastPath) {
+        return processAnalyzed(user_input, local.intent);
+    }
+
+    if (local.status == LocalRouteStatus::Chat) {
+        // A normal conversation needs no intent JSON.  Sending it straight to
+        // the conversation runtime avoids the former router-Gemma +
+        // chat-Gemma double inference.
+        IntentResult chat = local.intent;
+        chat.intent = IntentType::GeneralChat;
+        chat.local_route = true;
+        chat.json_valid = true;
+        return processAnalyzed(user_input, chat);
+    }
+
+    // SemanticFallback is a business request.  Gemma gets one chance to
+    // produce a structured intent; an unstructured answer is not allowed to
+    // fall through to a second chat inference or to device execution.
+    IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
+    if (isMemorySemanticHint(local.semantic_hint) && intent.intent == IntentType::Clarify) {
+        ServiceResult result;
+        result.task_type = IntentType::Clarify;
+        result.intent_latency_ms = intent.intent_latency_ms;
+        result.call_llm = false;
+        result.fixed_reply = intent.clarification_question.empty()
+                                 ? "这条记忆内容没有成功解析，请换一种说法后再试。"
+                                 : intent.clarification_question;
+        return result;
+    }
+    if (intent.intent == IntentType::GeneralChat) {
+        // The structured pass has already consumed the only allowed Gemma
+        // invocation. Preserve a model-provided safe reply when available;
+        // otherwise clarify rather than making a second chat-model call.
+        if (!intent.response_text.empty()) {
+            ServiceResult result;
+            result.task_type = IntentType::GeneralChat;
+            result.intent_latency_ms = intent.intent_latency_ms;
+            result.call_llm = false;
+            result.fixed_reply = intent.response_text;
+            return result;
+        }
+        IntentResult clarify;
+        clarify.intent = IntentType::Clarify;
+        clarify.local_route = true;
+        clarify.json_valid = true;
+        clarify.intent_latency_ms = intent.intent_latency_ms;
+        clarify.clarification_question =
+            "这条设备或记忆请求还不够明确，请换一种说法后再试。";
+        return processAnalyzed(user_input, clarify);
+    }
+    // Structured business results use deterministic replies after validation,
+    // so intent extraction remains the only Gemma invocation on this branch.
+    intent.local_route = true;
     return processAnalyzed(user_input, intent);
 }
 
@@ -364,9 +657,29 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     IntentResult intent = analyzed_intent;
     ServiceResult result;
     result.task_type = intent.intent;
+    result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
-    if (looksLikeDeviceControlText(user_input) && inferred_command) {
+    // This guard is intentionally before deterministic intent correction and
+    // pending-slot merge: an explicit non-execution mention of a command must
+    // never reach the device handler merely because it contains control words.
+    if (hasDeviceWord(user_input) && hasControlVerb(user_input) &&
+        isExecutionSuppressedControlText(user_input)) {
+        pending_device_command_.reset();
+        pending_device_turns_remaining_ = 0;
+        result.task_type = IntentType::GeneralChat;
+        result.call_llm = false;
+        result.fixed_reply = nonExecutionControlReply(user_input);
+        std::cout << "[ExecutionGuard] blocked_non_execution_control" << std::endl;
+        return result;
+    }
+
+    const bool can_force_device_control =
+        intent.intent == IntentType::GeneralChat ||
+        intent.intent == IntentType::DeviceControl ||
+        intent.intent == IntentType::MemoryWrite ||
+        intent.intent == IntentType::Clarify;
+    if (can_force_device_control && looksLikeDeviceControlText(user_input) && inferred_command) {
         intent.intent = IntentType::DeviceControl;
         intent.device_command = intent.device_command
                                     ? applyDeterministicDeviceSlots(*intent.device_command, inferred_command)
@@ -403,6 +716,10 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             supplement = inferred_command;
         }
 
+        if (supplement && isExcludedDeviceMention(user_input, supplement->device)) {
+            supplement->device.clear();
+        }
+
         if (supplement && hasAnyDeviceSlot(*supplement)) {
             DeviceCommand merged = mergeDeviceCommand(*pending_device_command_, *supplement);
             std::vector<std::string> missing = missingDeviceSlots(merged);
@@ -433,6 +750,14 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
 
     switch (intent.intent) {
         case IntentType::GeneralChat: {
+            if (intent.memory_context_query) {
+                result.runtime_context = context_builder_.buildMemoryContext(
+                    *intent.memory_context_query, memory_store_, 3);
+            }
+            if (result.runtime_context.empty() && intent.include_recent_memory_context) {
+                result.runtime_context = context_builder_.buildRecentMemoryContext(memory_store_, 3);
+            }
+            result.runtime_context += noBusinessActionContext();
             result.call_llm = true;
             break;
         }
@@ -443,6 +768,14 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
                 result.call_llm = false;
                 result.fixed_reply = defaultClarification();
                 std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
+                break;
+            }
+
+            if (needsTemperatureClarification(user_input)) {
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = makeTemperatureClarification(user_input);
+                std::cout << "[DeviceCommandInvalid] error=ambiguous_temperature" << std::endl;
                 break;
             }
 
@@ -499,10 +832,18 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
 
             if (!event_log_.append(event)) {
                 std::cerr << kLogPrefix << " device_event_save=FAIL" << std::endl;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = "故障记录保存失败，请稍后再试。";
+                break;
             }
-            result.call_llm = true;
+            result.call_llm = !intent.local_route;
             result.device_event = event;
-            result.runtime_context = makeDeviceFaultContext(event);
+            if (intent.local_route) {
+                result.fixed_reply = makeLocalFaultReply(event);
+            } else {
+                result.runtime_context = makeDeviceFaultContext(event);
+            }
             std::cout << "[DeviceFault]" << std::endl
                       << formatDeviceEvent(event) << std::endl;
             std::cout << "[InjectedContext]" << std::endl
@@ -532,9 +873,15 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             memory_store_.upsert(item);
             if (!memory_store_.save()) {
                 std::cerr << kLogPrefix << " memory_save=FAIL" << std::endl;
+                result.task_type = IntentType::Clarify;
+                result.call_llm = false;
+                result.fixed_reply = "记忆保存失败，请稍后再试。";
+                break;
             }
             result.call_llm = false;
-            result.fixed_reply = "好的，我记住了。";
+            result.fixed_reply = intent.response_text.empty()
+                                     ? "好的，我记住了。"
+                                     : intent.response_text;
             result.stored_memory = item;
             std::cout << "[MemoryWrite]" << std::endl
                       << formatMemoryItem(item) << std::endl;
@@ -550,11 +897,15 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
                 break;
             }
 
-            result.call_llm = true;
-            result.runtime_context =
-                context_builder_.buildMemoryContext(*intent.memory_query, memory_store_);
-            if (result.runtime_context.empty()) {
-                result.runtime_context = noMemoryContext();
+            result.call_llm = !intent.local_route;
+            if (intent.local_route) {
+                result.fixed_reply = makeLocalMemoryQueryReply(*intent.memory_query, memory_store_);
+            } else {
+                result.runtime_context =
+                    context_builder_.buildMemoryContext(*intent.memory_query, memory_store_);
+                if (result.runtime_context.empty()) {
+                    result.runtime_context = noMemoryContext();
+                }
             }
             std::cout << "[InjectedContext]" << std::endl
                       << result.runtime_context;
@@ -584,6 +935,68 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
             result.fixed_reply = removed > 0 ? "好的，已删除相关记忆。" : "没有找到需要删除的记忆。";
             std::cout << "[MemoryDelete] removed=" << removed << std::endl;
             printSnapshot(memory_store_.snapshot());
+            break;
+        }
+
+        case IntentType::WeatherQuery: {
+            if (!intent.weather_query) {
+                result.call_llm = false;
+                result.fixed_reply = "请告诉我需要查询天气的地点。";
+                break;
+            }
+
+            NormalizedWeatherQuery normalized;
+            std::string error;
+            if (!WeatherQueryValidator::normalize(*intent.weather_query, &normalized, &error)) {
+                result.call_llm = false;
+                if (error == "missing_city") {
+                    result.fixed_reply = "请告诉我需要查询天气的地点。";
+                } else if (error == "future_date_unsupported") {
+                    result.fixed_reply = "当前历史天气查询不支持未来日期。";
+                } else if (error == "date_range_too_long") {
+                    result.fixed_reply = "单次天气查询最长支持30天。";
+                } else {
+                    result.fixed_reply = "日期或查询时长不合法，请按YYYY-MM-DD格式重新说明。";
+                }
+                std::cout << "[WeatherQuery] status=invalid error=" << error << std::endl;
+                break;
+            }
+
+            result.tool_name = "weather_history";
+            if (!weather_service_.queryHistory(normalized, &result.tool_result_json,
+                                               &result.runtime_context, &error)) {
+                result.call_llm = false;
+                if (error == "location_not_found") {
+                    result.fixed_reply = "没有找到这个地点，请换一个城市名称再试。";
+                } else if (error == "unauthorized") {
+                    result.fixed_reply = "天气服务认证失败，请检查服务端API Key。";
+                } else if (error == "service_busy") {
+                    result.fixed_reply = "天气服务繁忙，请稍后再试。";
+                } else {
+                    result.fixed_reply = "暂时无法获取天气信息，请稍后再试。";
+                }
+                std::cout << "[WeatherQuery] status=failed error=" << error << std::endl;
+                break;
+            }
+
+            result.call_llm = true;
+            std::cout << "[WeatherQuery] status=success city=" << normalized.city
+                      << " start=" << normalized.start_date
+                      << " end=" << normalized.end_date
+                      << " days=" << normalized.days << std::endl;
+            break;
+        }
+
+        case IntentType::RecordQuery: {
+            if (!intent.record_query) {
+                result.call_llm = false;
+                result.fixed_reply = "请说明要查询设备故障、用户偏好还是物品位置。";
+                break;
+            }
+            result.call_llm = false;
+            result.fixed_reply = makeRecordListReply(intent.record_query->type,
+                                                     memory_store_.snapshot(),
+                                                     event_log_.snapshot());
             break;
         }
 
@@ -622,6 +1035,14 @@ std::vector<MemoryItem> AssistantService::memorySnapshot() const {
 
 std::vector<DeviceEvent> AssistantService::eventSnapshot() const {
     return event_log_.snapshot();
+}
+
+bool AssistantService::deleteMemoryRecord(const MemoryItem& item) {
+    return memory_store_.removeExact(item) && memory_store_.save();
+}
+
+bool AssistantService::deleteDeviceFaultRecord(const DeviceEvent& event) {
+    return event_log_.removeExact(event) && event_log_.save();
 }
 
 }  // namespace assistant

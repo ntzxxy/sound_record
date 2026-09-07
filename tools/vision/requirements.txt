@@ -1,0 +1,4 @@
+# GPU wheels for torch/torchvision are installed from the PyTorch CUDA 12.8 index.
+# See docs/vision-integration.md for the activation command and model boundary.
+ultralytics==8.4.131
+onnx==1.22.0

@@ -8,7 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 # 添加流式接收端可执行程序
-add_executable(stream_receiver stream_receiver.cpp)
+add_executable(stream_receiver
+    stream_receiver.cpp
+    control_gateway.cpp
+)
 
 # 复用板子端 net.h 的 StreamHeader_t 帧协议定义
 target_include_directories(stream_receiver PRIVATE
@@ -16,12 +19,13 @@ target_include_directories(stream_receiver PRIVATE
     ${PROJECT_SOURCE_DIR}/libasr
     ${PROJECT_SOURCE_DIR}/libllm
     ${PROJECT_SOURCE_DIR}/libassistant
+    ${PROJECT_SOURCE_DIR}/libconversation
     ${PROJECT_SOURCE_DIR}/libtts
     ${PROJECT_SOURCE_DIR}/libaudio
 )
 
 # 链接 ASR、LLM、TTS、AudioPlayer 模块
-target_link_libraries(stream_receiver PRIVATE asr assistant llm tts audio_lib asound pthread)
+target_link_libraries(stream_receiver PRIVATE asr conversation assistant llm tts audio_lib asound pthread)
 
 target_compile_options(stream_receiver PRIVATE
     -Wall

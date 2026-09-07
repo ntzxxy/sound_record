@@ -16,7 +16,7 @@ static void sig_handler(int sig) {
 
 int main(int argc, char *argv[]) {
     // 用法: ./out [usb|wm8960] [--upload] [--server IP]
-    //       ./out usb                        → 默认连 10.137.46.138:8080
+    //       ./out usb                        → 默认连 10.137.46.138:18080
     //       ./out usb --server 192.168.1.100 → 指定 IP
     //       ./out wm8960
     const AudioConfig *cfg = &AUDIO_CFG_USB;

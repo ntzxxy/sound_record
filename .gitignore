@@ -2,6 +2,9 @@ build/
 build-pc/
 server/received_audio/
 docs/
+!/docs/
+docs/*
+!docs/JETSON_ORIN_NX_DEPLOYMENT.md
 PPT/
 *.docx
 *.gguf
@@ -12,6 +15,29 @@ cmake-build-*/
 *.swp
 *.swo
 *~
+
+# Downloaded Christina Qwen3-TTS model assets
+models/christina-tts-1.5-q4/
+
+# Downloaded TTS model assets. They are reproducible runtime dependencies and
+# must be downloaded during deployment instead of being committed to Git.
+models/kokoro-int8-multi-lang-v1_1/
+models/supertonic-tts/
+models/vits-tts-zh/
+*.spk
+
+# Local Qt HMI state and benchmark captures. These contain interaction text,
+# process samples and device telemetry, so they must remain local.
+/runtime/
+
+# 摄像头运行时产生的截图和后续本地视觉记录可能包含隐私画面，不提交到仓库。
+/vision_records/
+
+# 视觉开发环境、预训练权重与部署导出物都可重新获得，且体积较大。
+/.venv-vision/
+/models/vision/
+/runs/vision/
+/third_party/onnxruntime/
 
 # Codex task files
 .codex-tasks/

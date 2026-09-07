@@ -6,7 +6,9 @@
 #include "event_log.h"
 #include "intent_preprocessor.h"
 #include "memory_store.h"
+#include "request_router.h"
 #include "validators.h"
+#include "weather_service.h"
 
 #include <optional>
 #include <string>
@@ -25,9 +27,12 @@ public:
                                   const IntentResult& analyzed_intent);
     std::vector<MemoryItem> memorySnapshot() const;
     std::vector<DeviceEvent> eventSnapshot() const;
+    bool deleteMemoryRecord(const MemoryItem& item);
+    bool deleteDeviceFaultRecord(const DeviceEvent& event);
 
 private:
     IntentPreprocessor intent_preprocessor_;
+    RequestRouter request_router_;
     DeviceRegistry device_registry_;
     DeviceCommandValidator device_validator_;
     MemoryItemValidator memory_validator_;
@@ -35,6 +40,7 @@ private:
     MemoryStore memory_store_;
     EventLog event_log_;
     ContextBuilder context_builder_;
+    WeatherService weather_service_;
     std::optional<DeviceCommand> pending_device_command_;
     int pending_device_turns_remaining_{0};
 };

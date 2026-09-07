@@ -233,6 +233,11 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         getStringField(memory_json, "subject", &item.subject);
         getStringField(memory_json, "attribute", &item.attribute);
         getStringField(memory_json, "value", &item.value);
+        getStringField(memory_json, "condition", &item.condition);
+        getStringField(memory_json, "context", &item.context);
+        getStringField(memory_json, "time", &item.time);
+        getStringField(memory_json, "scope", &item.scope);
+        item.confidence = static_cast<int>(getOptionalNumberField(memory_json, "confidence").value_or(100));
         parsed.memory = item;
     }
 
@@ -241,6 +246,8 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         MemoryQuery query;
         getStringField(query_json, "subject", &query.subject);
         getStringField(query_json, "attribute", &query.attribute);
+        getStringField(query_json, "condition", &query.condition);
+        getStringField(query_json, "scope", &query.scope);
         parsed.memory_query = query;
     }
 
@@ -253,8 +260,19 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         parsed.memory_delete = request;
     }
 
+    std::string weather_json = getObjectField(parsed.raw_json, "weather_query", &is_null);
+    if (!weather_json.empty()) {
+        WeatherQuery query;
+        getStringField(weather_json, "city", &query.city);
+        getStringField(weather_json, "start_date", &query.start_date);
+        getStringField(weather_json, "end_date", &query.end_date);
+        query.days = static_cast<int>(getOptionalNumberField(weather_json, "days").value_or(0));
+        parsed.weather_query = query;
+    }
+
     parsed.missing_slots = getStringArrayField(parsed.raw_json, "missing_slots");
     getStringField(parsed.raw_json, "clarification_question", &parsed.clarification_question);
+    getStringField(parsed.raw_json, "reply", &parsed.response_text);
     parsed.json_valid = true;
     *result = parsed;
     return true;

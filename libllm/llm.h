@@ -1,6 +1,8 @@
 #ifndef LLM_H
 #define LLM_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,10 +14,28 @@ extern "C" {
  */
 typedef void (*llm_callback_t)(const char *text, int is_final);
 
+/** 一条待套用模型 Chat Template 的消息。 */
+typedef struct {
+    const char *role;
+    const char *content;
+} llm_chat_message_t;
+
 typedef struct {
     int max_tokens;
     float temperature;
 } llm_once_params_t;
+
+/** 最近一次 llm_chat 调用的可复核性能指标。 */
+typedef struct {
+    int valid;
+    int prompt_tokens;
+    int output_tokens;
+    int64_t ttft_ms;
+    int64_t prompt_decode_ms;
+    int64_t decode_ms;
+    double tokens_per_s;
+    int truncated;
+} llm_generation_metrics_t;
 
 /**
  * 初始化 LLM 引擎（加载模型）
@@ -32,6 +52,9 @@ int llm_init(const char *model_path);
  * @return 0 成功，-1 失败
  */
 int llm_chat(const char *prompt, llm_callback_t callback);
+
+/** 获取最近一次 llm_chat 的性能指标；未发生成功生成时返回 0。 */
+int llm_get_last_chat_metrics(llm_generation_metrics_t *metrics);
 
 /**
  * 无状态短文本生成，用于意图分类等不应污染聊天历史的任务。
@@ -72,6 +95,13 @@ int llm_append_text(const char *text);
  */
 int llm_format_prompt(const char *system_prompt, const char *user_message,
                       char *buf, int buf_size);
+
+/**
+ * 使用当前模型自带的 Chat Template 格式化多条消息。
+ * @param add_generation_prompt 非 0 时在末尾追加 assistant/model 的生成起始标记。
+ */
+int llm_format_messages(const llm_chat_message_t *messages, int message_count,
+                        int add_generation_prompt, char *buf, int buf_size);
 
 /**
  * 销毁 LLM 引擎，释放资源

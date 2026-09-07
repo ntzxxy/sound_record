@@ -1,5 +1,6 @@
 #include "event_log.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <utility>
@@ -105,6 +106,20 @@ bool EventLog::append(const DeviceEvent& event) {
         events_.push_back(event);
     }
     return save();
+}
+
+bool EventLog::removeExact(const DeviceEvent& event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = std::find_if(events_.begin(), events_.end(), [&](const DeviceEvent& existing) {
+        return existing.timestamp == event.timestamp &&
+               existing.room == event.room &&
+               existing.device == event.device &&
+               existing.event_type == event.event_type &&
+               existing.description == event.description;
+    });
+    if (found == events_.end()) return false;
+    events_.erase(found);
+    return true;
 }
 
 bool EventLog::save() const {
