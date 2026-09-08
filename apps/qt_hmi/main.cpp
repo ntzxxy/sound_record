@@ -230,8 +230,8 @@ private:
         auto* history_page = new QWidget(right_tabs);
         auto* history_layout = new QVBoxLayout(history_page);
         auto* history_hint = new QLabel(
-            QStringLiteral("记录由现有对话接口自动持久化：可说“记住钥匙放在玄关”，"
-                           "“我喜欢 26 度”，或“客厅灯坏了”。"),
+            QStringLiteral("长期记忆需要明确请求：可说“请记住，钥匙放在玄关”，"
+                           "“请记住，我喜欢 26 度”，或“请记录，客厅灯坏了”。"),
             history_page);
         history_hint->setWordWrap(true);
         history_hint->setStyleSheet(QStringLiteral("color: #64748B;"));
@@ -244,14 +244,14 @@ private:
             {QStringLiteral("物品"), QStringLiteral("属性"), QStringLiteral("位置"),
              QStringLiteral("更新时间"), QStringLiteral("操作")}, history_tabs);
         preferences_table_ = createHistoryTable(
-            {QStringLiteral("主题"), QStringLiteral("属性"), QStringLiteral("偏好值"),
-             QStringLiteral("更新时间"), QStringLiteral("操作")}, history_tabs);
+            {QStringLiteral("类别"), QStringLiteral("主题"), QStringLiteral("属性"),
+             QStringLiteral("内容"), QStringLiteral("更新时间"), QStringLiteral("操作")}, history_tabs);
         device_faults_table_ = createHistoryTable(
             {QStringLiteral("房间"), QStringLiteral("设备"), QStringLiteral("故障类型"),
              QStringLiteral("描述"), QStringLiteral("发生时间"), QStringLiteral("操作")},
             history_tabs);
         history_tabs->addTab(object_locations_table_, QStringLiteral("物品位置"));
-        history_tabs->addTab(preferences_table_, QStringLiteral("用户偏好"));
+        history_tabs->addTab(preferences_table_, QStringLiteral("用户记忆"));
         history_tabs->addTab(device_faults_table_, QStringLiteral("设备故障"));
         history_layout->addWidget(history_tabs, 1);
         right_tabs->addTab(history_page, QStringLiteral("历史记忆"));
@@ -385,6 +385,14 @@ private:
         table->setItem(row, column, item);
     }
 
+    static QString userMemoryCategoryText(const std::string& category) {
+        if (category == "USER_PREFERENCE") return QStringLiteral("用户偏好");
+        if (category == "DEVICE_PREFERENCE") return QStringLiteral("设备偏好");
+        if (category == "HABIT") return QStringLiteral("习惯");
+        if (category == "ROUTINE") return QStringLiteral("例程");
+        return QString::fromUtf8(category.c_str());
+    }
+
     void deleteMemoryFromHistory(const assistant::MemoryItem& item) {
         const QString details = QStringLiteral("%1：%2 = %3")
                                     .arg(QString::fromUtf8(item.category.c_str()),
@@ -446,22 +454,29 @@ private:
             QTableWidget* table = nullptr;
             if (item.category == "OBJECT_LOCATION") {
                 table = object_locations_table_;
-            } else if (item.category == "USER_PREFERENCE") {
+            } else if (item.category == "USER_PREFERENCE" ||
+                       item.category == "DEVICE_PREFERENCE" ||
+                       item.category == "HABIT" || item.category == "ROUTINE") {
                 table = preferences_table_;
             } else {
                 continue;
             }
             const int row = table->rowCount();
             table->insertRow(row);
-            setCell(table, row, 0, QString::fromUtf8(item.subject.c_str()));
-            setCell(table, row, 1, QString::fromUtf8(item.attribute.c_str()));
-            setCell(table, row, 2, QString::fromUtf8(item.value.c_str()));
-            setCell(table, row, 3, unixTimeText(item.updated_at));
+            const bool is_user_memory = table == preferences_table_;
+            const int content_offset = is_user_memory ? 1 : 0;
+            if (is_user_memory) {
+                setCell(table, row, 0, userMemoryCategoryText(item.category));
+            }
+            setCell(table, row, content_offset, QString::fromUtf8(item.subject.c_str()));
+            setCell(table, row, content_offset + 1, QString::fromUtf8(item.attribute.c_str()));
+            setCell(table, row, content_offset + 2, QString::fromUtf8(item.value.c_str()));
+            setCell(table, row, content_offset + 3, unixTimeText(item.updated_at));
             auto* delete_button = new QPushButton(QStringLiteral("删除"), table);
             delete_button->setToolTip(QStringLiteral("删除这条历史记忆"));
             connect(delete_button, &QPushButton::clicked, this,
                     [this, item] { deleteMemoryFromHistory(item); });
-            table->setCellWidget(row, 4, delete_button);
+            table->setCellWidget(row, content_offset + 4, delete_button);
         }
         for (const auto& event : events) {
             const int row = device_faults_table_->rowCount();
