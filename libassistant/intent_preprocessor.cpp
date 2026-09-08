@@ -72,15 +72,26 @@ const char kIntentSystemPrompt[] =
     "用户: 帮我打开卧室的\n"
     "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"卧室\",\"device\":\"\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"device\"],\"clarification_question\":\"请问要打开卧室的哪个设备？\"}";
 
+// Explicit memory writes arrive here only after the local router has seen a
+// clear request such as "请记住".  They do not need the much larger prompt
+// that also teaches device control, weather and record queries.  Keeping the
+// output schema small reduces both prompt prefill and autoregressive decoding.
+const char kExplicitMemoryWritePrompt[] =
+    "用户已明确要求保存长期记忆。只输出一个JSON对象，不要解释、不要markdown。\n"
+    "有完整事实时只能输出：{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"USER_PREFERENCE|DEVICE_PREFERENCE|HABIT|ROUTINE|OBJECT_LOCATION\",\"subject\":\"\",\"attribute\":\"\",\"value\":\"\"}}。\n"
+    "只记录用户原话中明确给出的事实，不能猜测或补充。睡眠、作息等稳定习惯用HABIT；物品所在位置用OBJECT_LOCATION；一般喜好用USER_PREFERENCE。\n"
+    "缺少可保存的具体内容时输出：{\"intent\":\"CLARIFY\",\"clarification_question\":\"请说明要记住的具体内容。\"}。\n"
+    "用户：请记住，我晚上十点睡觉\n"
+    "输出：{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"HABIT\",\"subject\":\"睡眠\",\"attribute\":\"时间\",\"value\":\"晚上十点\"}}";
+
 std::string makeSystemPrompt(const std::string& semantic_hint) {
+    if (semantic_hint == "explicit_memory_write") return kExplicitMemoryWritePrompt;
     if (semantic_hint.empty()) return kIntentSystemPrompt;
 
     std::string prompt{kIntentSystemPrompt};
     prompt += "\n本地候选提示（仅用于决定是否抽取，不能当成事实，也不能据此猜测）：";
     if (semantic_hint == "device_fault_report") {
         prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
-    } else if (semantic_hint == "explicit_memory_write") {
-        prompt += "用户明确要求持久记忆。该意图优先于句内描述性的设置、打开等词；只要原文给出了可长期保存的偏好、习惯或物品位置，就输出MEMORY_WRITE。";
     } else if (semantic_hint == "complex_device_control") {
         prompt += "这可能是复杂设备控制，但本地不支持直接执行。只有能抽取为受支持的完整DEVICE_CONTROL时才输出该类型；否则输出GENERAL_CHAT并在reply中给出安全答复，绝不虚构执行结果。";
     }
@@ -104,7 +115,10 @@ IntentResult IntentPreprocessor::analyze(const std::string& user_input,
 
     char output[4096];
     llm_once_params_t params;
-    params.max_tokens = 192;
+    // The dedicated prompt emits only intent + three required memory fields.
+    // 96 tokens leaves room for Chinese values while preventing a malformed
+    // response from spending the 192-token general-intent budget.
+    params.max_tokens = semantic_hint == "explicit_memory_write" ? 96 : 192;
     params.temperature = 0.0f;
     int latency_ms = 0;
     const std::string system_prompt = makeSystemPrompt(semantic_hint);

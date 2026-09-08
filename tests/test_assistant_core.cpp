@@ -211,6 +211,25 @@ int main() {
     }
 
     {
+        // The fast explicit-memory prompt deliberately omits unrelated fields
+        // and optional memory metadata.  Keep that compact contract parseable.
+        IntentJsonParser parser;
+        IntentResult result;
+        std::string error;
+        const std::string json =
+            "{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"HABIT\","
+            "\"subject\":\"睡眠\",\"attribute\":\"时间\",\"value\":\"晚上十点\"}}";
+        CHECK(parser.parse(json, &result, &error));
+        CHECK(result.intent == IntentType::MemoryWrite);
+        CHECK(result.memory.has_value());
+        CHECK(result.memory->category == "HABIT");
+        CHECK(result.memory->subject == "睡眠");
+        CHECK(result.memory->attribute == "时间");
+        CHECK(result.memory->value == "晚上十点");
+        CHECK(result.memory->confidence == 100);
+    }
+
+    {
         IntentJsonParser parser;
         IntentResult result;
         std::string error;
