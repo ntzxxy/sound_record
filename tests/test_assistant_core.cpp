@@ -459,23 +459,28 @@ int main() {
         CHECK(router.analyze("你好，今天心情怎么样？").status == LocalRouteStatus::Chat);
         CHECK(router.analyze("请记住我不喜欢太刺眼的光").status ==
               LocalRouteStatus::SemanticFallback);
-        CHECK(router.analyze("晚上看书的时候，灯不要太亮。").semantic_hint ==
-              "implicit_preference_or_routine");
+        CHECK(router.analyze("晚上看书的时候，灯不要太亮。").status ==
+              LocalRouteStatus::Chat);
         CHECK(router.analyze("我喜欢今天的天气。").status == LocalRouteStatus::Chat);
-        CHECK(router.analyze("我正在准备睡前阅读，我有一盏阅读灯，位置在书桌旁。").semantic_hint ==
-              "implicit_object_location");
-        CHECK(router.analyze("我通常在晚上十一点阅读半小时。").semantic_hint ==
-              "implicit_preference_or_routine");
-        CHECK(router.analyze("阅读时我不喜欢太刺眼的光。").semantic_hint ==
-              "implicit_preference_or_routine");
-        const auto preference_query = router.analyze("我喜欢什么样的灯光？");
+        CHECK(router.analyze("我正在准备睡前阅读，我有一盏阅读灯，位置在书桌旁。").status ==
+              LocalRouteStatus::Chat);
+        CHECK(router.analyze("我通常在晚上十一点阅读半小时。").status ==
+              LocalRouteStatus::Chat);
+        CHECK(router.analyze("阅读时我不喜欢太刺眼的光。").status ==
+              LocalRouteStatus::Chat);
+        CHECK(router.analyze("我喜欢在周末的晚上去海边散步，一边吹风，一边听音乐。").status ==
+              LocalRouteStatus::Chat);
+        CHECK(router.analyze("我喜欢白天骑共享单车去上班，晚上做公交回家。这样既能锻炼也不累。").status ==
+              LocalRouteStatus::Chat);
+        const auto lighting_question = router.analyze("我喜欢什么样的灯光？");
+        CHECK(lighting_question.status == LocalRouteStatus::Chat);
+        const auto preference_query = router.analyze("你还记得我不喜欢哪种光吗？");
         CHECK(preference_query.status == LocalRouteStatus::FastPath);
         CHECK(preference_query.intent.intent == IntentType::MemoryQuery);
         CHECK(preference_query.intent.memory_query);
         CHECK(preference_query.intent.memory_query->attribute == "偏好");
-        CHECK(router.analyze("你还记得我不喜欢哪种光吗？").status ==
-              LocalRouteStatus::FastPath);
-        CHECK(router.analyze("我之前一般什么时候阅读？").semantic_hint == "memory_recall");
+        CHECK(router.analyze("我之前一般什么时候阅读？").status == LocalRouteStatus::Chat);
+        CHECK(router.analyze("你还记得我上次说过什么吗？").status == LocalRouteStatus::Chat);
         CHECK(router.analyze("室内温度一般设置多少比较舒服？").status ==
               LocalRouteStatus::Chat);
         CHECK(router.analyze("打开").status == LocalRouteStatus::Chat);

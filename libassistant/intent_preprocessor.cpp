@@ -77,13 +77,7 @@ std::string makeSystemPrompt(const std::string& semantic_hint) {
 
     std::string prompt{kIntentSystemPrompt};
     prompt += "\n本地候选提示（仅用于决定是否抽取，不能当成事实，也不能据此猜测）：";
-    if (semantic_hint == "implicit_preference_or_routine") {
-        prompt += "这句话可能包含用户长期偏好或习惯。只有原文确实陈述了稳定信息时才输出MEMORY_WRITE。";
-    } else if (semantic_hint == "implicit_object_location") {
-        prompt += "这句话可能包含用户物品位置。仅在原文明确给出物品和位置时输出MEMORY_WRITE。";
-    } else if (semantic_hint == "memory_recall") {
-        prompt += "这句话可能在查询已保存的偏好或物品信息。请输出MEMORY_QUERY，并提取subject和attribute。";
-    } else if (semantic_hint == "device_fault_report") {
+    if (semantic_hint == "device_fault_report") {
         prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
     } else if (semantic_hint == "explicit_memory_write") {
         prompt += "用户明确要求持久记忆。该意图优先于句内描述性的设置、打开等词；只要原文给出了可长期保存的偏好、习惯或物品位置，就输出MEMORY_WRITE。";

@@ -104,9 +104,7 @@ bool isPreferenceMemoryText(const std::string& text) {
 }
 
 bool isMemorySemanticHint(const std::string& hint) {
-    return hint == "explicit_memory_write" ||
-           hint == "implicit_preference_or_routine" ||
-           hint == "implicit_object_location";
+    return hint == "explicit_memory_write";
 }
 
 bool hasDeviceWord(const std::string& text) {
