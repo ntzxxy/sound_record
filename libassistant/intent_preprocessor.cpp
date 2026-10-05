@@ -72,10 +72,7 @@ const char kIntentSystemPrompt[] =
     "用户: 帮我打开卧室的\n"
     "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"卧室\",\"device\":\"\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"device\"],\"clarification_question\":\"请问要打开卧室的哪个设备？\"}";
 
-// Explicit memory writes arrive here only after the local router has seen a
-// clear request such as "请记住".  They do not need the much larger prompt
-// that also teaches device control, weather and record queries.  Keeping the
-// output schema small reduces both prompt prefill and autoregressive decoding.
+// 明确的记忆写入使用精简提示词，减少无关业务说明带来的预填充和生成开销。
 const char kExplicitMemoryWritePrompt[] =
     "用户已明确要求保存长期记忆。只输出一个JSON对象，不要解释、不要markdown。\n"
     "有完整事实时只能输出：{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"USER_PREFERENCE|DEVICE_PREFERENCE|HABIT|ROUTINE|OBJECT_LOCATION\",\"subject\":\"\",\"attribute\":\"\",\"value\":\"\"}}。\n"
@@ -115,9 +112,7 @@ IntentResult IntentPreprocessor::analyze(const std::string& user_input,
 
     char output[4096];
     llm_once_params_t params;
-    // The dedicated prompt emits only intent + three required memory fields.
-    // 96 tokens leaves room for Chinese values while preventing a malformed
-    // response from spending the 192-token general-intent budget.
+    // 专用提示只输出意图和三个必填字段，96 token 足以容纳中文值并限制异常续写。
     params.max_tokens = semantic_hint == "explicit_memory_write" ? 96 : 192;
     params.temperature = 0.0f;
     int latency_ms = 0;

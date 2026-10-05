@@ -52,8 +52,7 @@ struct MemoryItem {
     std::string attribute;
     std::string value;
     int64_t updated_at{0};
-    // Conditions distinguish a global preference from one that applies only
-    // during a scene such as reading or sleeping.
+    // condition 用于区分全局偏好和“阅读时”等特定场景下的偏好。
     std::string condition;
     std::string context;
     std::string time;
@@ -66,8 +65,7 @@ struct MemoryQuery {
     std::string attribute;
     std::string condition;
     std::string scope;
-    // Original question for local lexical retrieval. It is transient routing
-    // context and is deliberately never persisted as a memory field.
+    // 仅供本轮本地检索使用，不能作为记忆字段持久化。
     std::string query_text;
 };
 
@@ -108,28 +106,27 @@ struct IntentResult {
     std::optional<MemoryDeleteRequest> memory_delete;
     std::optional<RecordQuery> record_query;
     std::optional<WeatherQuery> weather_query;
-    // Local-only selectors for injecting memory into a normal chat turn.
+    // 普通对话可按需检索记忆并注入本轮上下文。
     std::optional<MemoryQuery> memory_context_query;
     bool include_recent_memory_context{false};
     std::vector<std::string> missing_slots;
     std::string clarification_question;
-    // Optional user-facing text from a validated structured result.
+    // 结构化结果校验通过后可直接使用的回复文本。
     std::string response_text;
     std::string raw_json;
     int intent_latency_ms{0};
     bool json_valid{false};
-    // True only when a deterministic local parser produced this decision.  It
-    // lets the executor keep a fixed reply on the fast path instead of
-    // needlessly asking the chat model to phrase a confirmation.
+    // 本地规则命中后置为 true，业务层可直接回复，避免再次调用模型润色。
     bool local_route{false};
 };
 
+// 路由分三档，决定是否以及如何调用模型。
 enum class LocalRouteStatus {
-    // Plain language: skip intent extraction and call the chat model once.
+    // 普通对话：跳过意图提取，直接调用一次对话模型。
     Chat,
-    // Business-like but not deterministic: ask Gemma for structured intent.
+    // 疑似业务请求：调用模型提取结构化意图。
     SemanticFallback,
-    // Deterministically parsed and validated locally.
+    // 稳定规则已解析：直接进入本地业务处理。
     FastPath
 };
 
@@ -137,15 +134,13 @@ struct RequestAnalysis {
     LocalRouteStatus status{LocalRouteStatus::Chat};
     IntentResult intent;
     std::string matched_rule;
-    // Constant, locally derived candidate type.  It is intentionally not an
-    // extracted fact and must never be persisted or executed by itself.
+    // 本地推断的候选类型只用于缩小模型提示范围，不能单独持久化或执行。
     std::string semantic_hint;
 };
 
 struct ServiceResult {
     IntentType task_type{IntentType::GeneralChat};
-    // Carried from IntentResult for UI/benchmark observability. It does not
-    // participate in routing or alter the selected task.
+    // 仅供界面和性能统计展示，不参与路由。
     int intent_latency_ms{0};
     bool call_llm{true};
     std::string runtime_context;

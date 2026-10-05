@@ -90,9 +90,8 @@ static int capture_callback_is_set(void) {
 
 static void emit_capture_event(audio_capture_event_t event, const int16_t *samples,
                                size_t sample_count) {
-    // Callback execution is intentionally serialized with registration. The
-    // cockpit callback only enqueues data, therefore it never blocks ALSA on
-    // inference and cannot re-enter this audio module.
+    // 回调注册和调用共用一把锁，避免注销时仍访问失效的流水线对象。
+    // 上层回调只入队，不在 ALSA 线程中执行推理。
     pthread_mutex_lock(&g_capture_callback_mutex);
     if (g_capture_callback != NULL) {
         g_capture_callback(event, samples, sample_count, rate, channel,
@@ -345,9 +344,7 @@ void* record_worker(void* arg) {
 void* writer_worker(void* arg)
 {
 #ifdef STREAMING_MODE
-    // P0 local runtime path. Keep the old TCP implementation below intact for
-    // the existing out/server demo; selecting this callback guarantees that no
-    // socket is opened and PCM remains in the current process.
+    // 注册本地回调时直接转交 PCM；否则继续使用下方的旧版 TCP 演示链路。
     if (capture_callback_is_set()) {
         const uint32_t frame_bytes = rate * channel / 5; // 100 ms, S16_LE
         std::vector<uint8_t> out_buf(frame_bytes);
@@ -373,8 +370,7 @@ void* writer_worker(void* arg)
                 }
             } else if (was_recording) {
                 was_recording = false;
-                // Let the capture thread finish an in-flight ALSA read, then
-                // drain all remaining samples before the turn boundary.
+                // 等待正在进行的 ALSA 读取结束，再排空缓冲区并发送本轮结束事件。
                 usleep(50000);
                 while (g_rb.availableData() > 0) {
                     size_t bytes = g_rb.availableData();

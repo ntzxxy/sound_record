@@ -15,6 +15,7 @@ cmake-build-*/
 *.swp
 *.swo
 *~
+/build-*/
 
 # Downloaded Christina Qwen3-TTS model assets
 models/christina-tts-1.5-q4/

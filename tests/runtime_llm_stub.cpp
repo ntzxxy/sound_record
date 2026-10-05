@@ -18,3 +18,8 @@ extern "C" int llm_generate_once(const char*,
     std::strcpy(output, json);
     return 0;
 }
+
+extern "C" int llm_get_last_chat_metrics(llm_generation_metrics_t* metrics) {
+    if (metrics) *metrics = {};
+    return 0;
+}

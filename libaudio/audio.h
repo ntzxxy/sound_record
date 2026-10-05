@@ -42,9 +42,7 @@ typedef struct WAV_DATA {
     u_int32_t Subchunk2Size;        /* pcm数据大小 */
 } __attribute__ ((packed)) DATA_t;
 
-// Optional local PCM sink for the single-process cockpit runtime.  Existing
-// board binaries leave this callback unset and continue to use the legacy
-// AIV1/TCP writer path unchanged.
+// 单进程运行时可注册本地 PCM 回调；未注册时仍走原有 AIV1/TCP 链路。
 typedef enum {
     AUDIO_CAPTURE_STARTED = 1,
     AUDIO_CAPTURE_PCM = 2,

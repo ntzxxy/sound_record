@@ -64,7 +64,7 @@ void tts_pipeline_set_output(tts_output_start_t start_cb,
 
 
 static void tts_synthesis_loop() {
-    // 压榨边缘端算力：赋予合成线程极高的 CPU 优先级，防止大模型推理时抢不到算力卡顿
+    // 提高合成线程优先级，减少与大模型并行运行时的音频卡顿。
     setpriority(PRIO_PROCESS, 0, -20);
     bool turn_has_audio = false;
 
@@ -183,7 +183,7 @@ int tts_pipeline_init(const char *tts_model_path, const char * /*save_dir*/) {
         std::cout << "[TTS] warmup " << (warmup_ok ? "done" : "failed") << " cost_ms="
                   << (now_ms() - warmup_begin_ms) << std::endl;
 
-        // 这两行执行完，两个 loop 函数就会在完全独立的 CPU 核心后台各自埋头死循环
+        // 合成和播放分线程运行，慢速声卡写入不会阻塞模型继续产出 PCM。
         g_synth_thread = std::thread(tts_synthesis_loop);
         g_play_thread  = std::thread(tts_playback_loop);
 
@@ -221,14 +221,12 @@ void tts_pipeline_interrupt(void) {
 void tts_pipeline_destroy(void) {
     std::cout << "[System] 准备关闭TTS模块" << std::endl;
 
-    // 1. 🌟 调用你刚才学完的 stop()。它内部会把 stop_ 置为 true，并且执行 notify_all() 大喇叭广播！
+    // 先唤醒两个阻塞队列，再等待工作线程退出。
     g_queue.stop();
 
-    // 2. 主线程死等在门口。两个在小黑屋里被 notify_all 惊醒的工人排队出锁，看到 stop_ 后自我解散
     if (g_synth_thread.joinable()) g_synth_thread.join();
     if (g_play_thread.joinable())  g_play_thread.join();
 
-    // 3. 干净地释放所有的硬件和模型资源
     g_player.reset();
     g_model.reset();
 

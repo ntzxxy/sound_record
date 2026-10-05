@@ -20,6 +20,7 @@ namespace {
 std::atomic<bool> g_quit{false};
 cockpit::LocalVoicePipeline* g_pipeline = nullptr;
 
+// 将现有 C 接口收敛成流水线需要的三个小接口，运行时不直接依赖具体模型实现。
 class RuntimeAsr final : public cockpit::AsrPort {
 public:
     void reset() override { asr_reset(); }
@@ -120,6 +121,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::string reply_buffer;
+    // 模型按片段输出文本；收到本轮结束事件后再整体交给 TTS。
     runtime.setEventCallback([&reply_buffer](const conversation::ConversationEvent& event) {
         if (event.type == conversation::EventType::ReplyDelta && event.enable_tts) {
             reply_buffer += event.text;
@@ -134,6 +136,7 @@ int main(int argc, char* argv[]) {
     RuntimeTts tts;
     cockpit::LocalVoicePipeline pipeline(asr, conversation, tts);
     pipeline.start();
+    // 注册回调后音频模块走本地进程内链路，不再连接旧版 TCP 服务。
     g_pipeline = &pipeline;
     audio_set_capture_callback(&onAudioCapture, nullptr);
 

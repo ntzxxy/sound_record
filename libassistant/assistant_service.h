@@ -16,6 +16,7 @@
 
 namespace assistant {
 
+// 助手业务总入口：负责路由、校验、状态读写，并决定是否调用对话模型。
 class AssistantService {
 public:
     explicit AssistantService(const std::string& memory_path,
@@ -41,6 +42,7 @@ private:
     EventLog event_log_;
     ContextBuilder context_builder_;
     WeatherService weather_service_;
+    // 参数不完整的设备命令只保留一轮，防止后续普通对话被误当成补充参数。
     std::optional<DeviceCommand> pending_device_command_;
     int pending_device_turns_remaining_{0};
 };

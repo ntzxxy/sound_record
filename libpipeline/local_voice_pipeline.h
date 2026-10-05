@@ -18,8 +18,7 @@ struct PcmFormat {
     int channels{1};
 };
 
-// The runtime owns concrete adapters for these ports.  Keeping the boundary
-// small makes the audio pipeline testable without a microphone or any model.
+// 运行入口负责提供这些适配器；流水线只依赖小接口，便于脱离麦克风和模型测试。
 class AsrPort {
 public:
     virtual ~AsrPort() = default;
@@ -41,9 +40,7 @@ public:
     virtual void interrupt() = 0;
 };
 
-// Single-process, bounded asynchronous path for ALSA capture events.  It is
-// deliberately an in-process queue rather than IPC/ZMQ: all AI modules run on
-// one Jetson and audio must not be serialized or sent over a socket.
+// ALSA 采集事件通过进程内有界队列串联，避免在单机部署中额外序列化和传输音频。
 class LocalVoicePipeline {
 public:
     struct Config {
@@ -62,8 +59,7 @@ public:
     void stop();
 
     void onCaptureStarted(PcmFormat format);
-    // Returns false only when a PCM chunk is dropped due to bounded-queue
-    // backpressure. Start/end events are never discarded.
+    // 队列满时仅允许丢 PCM 块，录音开始和结束事件必须保留。
     bool onPcm(const int16_t* samples, std::size_t sample_count, PcmFormat format);
     void onCaptureEnded();
 

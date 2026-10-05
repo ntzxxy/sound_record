@@ -42,8 +42,7 @@ void LocalVoicePipeline::enqueueCritical(Event event) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) return;
-        // Keep control transitions even under a slow ASR model. Drop the
-        // oldest PCM rather than losing a turn boundary.
+        // ASR 变慢时优先淘汰最早的 PCM，不能破坏一轮录音的边界。
         while (events_.size() >= config_.max_pending_events) {
             const auto pcm = std::find_if(events_.begin(), events_.end(), [](const Event& queued) {
                 return queued.type == EventType::Pcm;
@@ -126,7 +125,7 @@ void LocalVoicePipeline::workerLoop() {
 
         switch (event.type) {
             case EventType::CaptureStarted:
-                // A new user utterance always wins over residual speech.
+                // 新一轮录音开始即打断上一轮播报，避免扬声器声音继续占用交互。
                 tts_.interrupt();
                 asr_.reset();
                 capture_active = true;

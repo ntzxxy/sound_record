@@ -21,7 +21,7 @@ void tts_pipeline_set_output(tts_output_start_t start_cb,
                              tts_output_cancel_t cancel_cb);
 
 /**
- * 初始化 TTS 管线（加载模型 + 招募合成+播放双线程）
+ * 初始化 TTS 管线（加载模型并启动合成、播放线程）
  * @param tts_model_path  TTS 模型路径/目录
  * @param save_dir        WAV 存储目录（保留接口兼容，当前不落盘）
  * @return 0 成功，-1 失败
@@ -29,7 +29,7 @@ void tts_pipeline_set_output(tts_output_start_t start_cb,
 int tts_pipeline_init(const char *tts_model_path, const char *save_dir);
 
 /**
- * 将文本片段推入 TTS 传送带（非阻塞，立刻返回）
+ * 将文本片段推入 TTS 队列（非阻塞）
  */
 void tts_pipeline_push(const char *text, int is_final);
 
@@ -45,7 +45,7 @@ int tts_pipeline_is_busy(void);
 void tts_pipeline_interrupt(void);
 
 /**
- * 销毁 TTS 管线（广播下班 + join 线程 + 释放资源）
+ * 停止线程并释放 TTS 资源
  */
 void tts_pipeline_destroy(void);
 

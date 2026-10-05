@@ -43,11 +43,9 @@ struct ConversationEvent {
     std::string intent;
     bool enable_tts{true};
     bool is_final{false};
-    // Unix epoch milliseconds. A zero value is filled by ConversationRuntime
-    // or the control gateway before the event is sent to desktop clients.
+    // Unix 毫秒时间戳；为 0 时由运行时或控制网关在发送前补齐。
     uint64_t timestamp_ms{0};
-    // Per-turn metrics are populated on ReplyFinal. A negative value means
-    // that the stage was not executed (for example, a fixed rule reply).
+    // 性能指标只在 ReplyFinal 中完整填写，负值表示该阶段未执行。
     int64_t intent_latency_ms{-1};
     int prompt_tokens{-1};
     int output_tokens{-1};

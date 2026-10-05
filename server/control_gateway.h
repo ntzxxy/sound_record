@@ -45,8 +45,7 @@ private:
     std::vector<std::shared_ptr<Client>> clients_;
     std::vector<std::thread> client_threads_;
 
-    // These values are derived entirely from existing server-side events; the
-    // board protocol does not need a new status frame for the desktop UI.
+    // 桌面端状态均由现有服务事件推导，无需修改板端协议。
     mutable std::mutex status_mutex_;
     std::string board_status_{"unknown"};
     std::string board_message_;

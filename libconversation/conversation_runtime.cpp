@@ -141,6 +141,7 @@ void ConversationRuntime::workerLoop() {
         emit({EventType::UserMessage, request.source, request.turn_id,
               request.request_id, request.text, "", "", request.enable_tts, false});
 
+        // 助手服务先完成路由和本地业务；只有 call_llm 为真时才进入对话模型。
         assistant::ServiceResult result = assistant_service_->process(request.text);
         ConversationEvent intent_event{EventType::IntentResult, request.source, request.turn_id,
                                        request.request_id, "", "", assistant::toString(result.task_type),
@@ -173,9 +174,7 @@ void ConversationRuntime::workerLoop() {
                                                 &ConversationRuntime::agentCallback);
         callback_request_ = nullptr;
         callback_runtime_ = nullptr;
-        // llm_chat returns 1 when generation reaches the configured token
-        // limit. The streamed text and its metrics are still valid, so only a
-        // negative return value is an execution failure.
+        // 达到 token 上限仍有有效流式结果；只有负值表示模型执行失败。
         if (ret < 0) {
             emit({EventType::Error, request.source, request.turn_id,
                   request.request_id, "对话模型处理失败", "", "",
@@ -210,8 +209,7 @@ void ConversationRuntime::agentCallback(const char* text, int is_final) {
         runtime->emit({EventType::ReplyDelta, request->source, request->turn_id,
                        request->request_id, text, "", "", request->enable_tts, false});
     }
-    // ReplyFinal is emitted by workerLoop after llm_chat returns so it can
-    // carry the completed per-turn generation metrics.
+    // 最终事件由 workerLoop 统一发送，确保其中带有完整的本轮生成指标。
     (void) is_final;
 }
 

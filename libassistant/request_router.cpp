@@ -94,9 +94,7 @@ std::optional<double> extractNumber(const std::string& text) {
     return std::nullopt;
 }
 
-// These are language-level entity aliases, not the configured-device list.
-// A match means only that the user is addressing a plausible room/device; the
-// registry remains the sole authority on whether it can be executed.
+// 这里只维护语言别名；设备是否真实可执行仍以 DeviceRegistry 为准。
 struct EntityAlias {
     const char* text;
     const char* canonical;
@@ -134,8 +132,7 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     extractEntity(text, kRooms, sizeof(kRooms) / sizeof(kRooms[0]), &command.room);
     extractEntity(text, kDevices, sizeof(kDevices) / sizeof(kDevices[0]), &command.device);
 
-    // Mode is deliberately retained as an unsupported action in this build.
-    // It must reach the validator as DEVICE_CONTROL, never degrade to chat.
+    // “模式”仍按设备控制处理，再由校验层明确告知当前不支持。
     const bool asks_power_on = contains(text, "打开") || contains(text, "开启") ||
                                contains(text, "启动") || contains(text, "开机");
     const bool asks_power_off = contains(text, "关闭") || contains(text, "关掉") ||
@@ -161,10 +158,7 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     return command;
 }
 
-// This is deliberately a small declarative command grammar, rather than a
-// collection of route-priority keywords.  The extracted slots are evaluated
-// together so the caller can distinguish an executable command from a genuine
-// incomplete command and from ordinary conversation.
+// 小型声明式语法同时检查动作、房间和设备，用于区分完整命令、缺参命令和普通对话。
 enum class DeviceCommandMatch {
     NoMatch,
     PartialMatch,
@@ -192,8 +186,7 @@ bool isInformationalControlQuestion(const std::string& text) {
 
 LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
     LocalDeviceControlMatch match;
-    // A number alone is not an operation.  A supported command must contain a
-    // declared action phrase, plus at least a room or a device anchor.
+    // 单独的数字不是操作，至少需要动作词以及房间或设备中的一个锚点。
     if (!hasControlVerb(text) || isInformationalControlQuestion(text)) return match;
 
     const auto parsed = parseDeviceCommand(text);
@@ -203,16 +196,12 @@ LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
     if (!has_anchor) return match;
 
     if (match.command.action == "SET_TEMPERATURE") {
-        // A light's non-numeric setting (for example, "调成暖光") is a valid
-        // complex request, but not one of this build's locally executable
-        // temperature commands.  Give Gemma one structured chance instead of
-        // asking an irrelevant temperature clarification.
+        // “调成暖光”等非数值设置交给结构化提取，不能误走温度缺参追问。
         if (match.command.device == "灯" && !match.command.value) {
             match.status = DeviceCommandMatch::ComplexCandidate;
             return match;
         }
-        // "设置客厅的" and "把空调调到" have identified the operation family
-        // but not enough slots.  They are the only cases that may enter FSM.
+        // 已识别出操作类型但槽位不足时，才允许进入后续追问状态。
         if (!match.command.value || match.command.room.empty() || match.command.device.empty()) {
             match.status = DeviceCommandMatch::PartialMatch;
             return match;
@@ -230,9 +219,7 @@ LocalDeviceControlMatch matchLocalDeviceControl(const std::string& text) {
 }
 
 bool hasExplicitMemoryWrite(const std::string& text) {
-    // Long-term persistence needs user intent, not merely a first-person
-    // statement.  For example, "我喜欢周末去海边" remains normal chat unless
-    // the user explicitly asks the assistant to remember it.
+    // 长期记忆必须有明确保存意图，普通的第一人称陈述仍按对话处理。
     return contains(text, "记住") || contains(text, "保存到记忆") ||
            contains(text, "加入记忆") || contains(text, "保存为偏好");
 }
@@ -260,14 +247,9 @@ std::optional<MemoryQuery> parseExactLocationQuery(const std::string& text) {
     return MemoryQuery{subject, "位置", "", "", ""};
 }
 
-// Preference recall has a small, stable vocabulary in the supported Chinese
-// commands. Keep it local so an existing preference cannot become a needless
-// structured-model clarification.
+// 偏好查询句式较稳定，优先本地处理，避免不必要的结构化模型调用。
 std::optional<MemoryQuery> parsePreferenceQuery(const std::string& text) {
-    // A topic word such as "灯光" plus a question word is ordinary conversation,
-    // not evidence that the user is asking to read persisted memory.  Requiring
-    // an explicit recall reference prevents questions such as "我喜欢什么样的
-    // 灯光？" from being answered with an unrelated stored preference.
+    // 仅有主题词和疑问词不足以读取记忆，还需要“记得”等明确回忆语义。
     const bool recalls_saved_memory =
         contains(text, "还记得") || contains(text, "之前记录") ||
         contains(text, "已保存") || contains(text, "保存过") ||
@@ -428,7 +410,7 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return fastResult(std::move(intent), "empty_input");
     }
 
-    // Query verbs must win over the generic "记录" word in a fault report.
+    // “查询记录”的优先级高于故障描述中的泛化“记录”词。
     if (const auto query = parseRecordQuery(input)) {
         IntentResult intent;
         intent.intent = IntentType::RecordQuery;
@@ -486,8 +468,7 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return analysis;
     }
 
-    // Explicit preferences are intentionally left for the semantic fallback:
-    // a local control parser must never turn a preference into an action.
+    // 明确偏好交给结构化提取，防止本地控制规则把偏好误执行为设备动作。
     if (hasExplicitMemoryWrite(input)) {
         analysis.status = LocalRouteStatus::SemanticFallback;
         analysis.matched_rule = "explicit_memory_write";
@@ -495,8 +476,7 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return analysis;
     }
 
-    // This is an incomplete but explicit device operation. It carries enough
-    // business state for the validator/FSM to ask only for the missing action.
+    // 明确但不完整的设备操作进入追问状态，只询问缺失槽位。
     if ((contains(input, "操作") || contains(input, "控制"))) {
         const auto command = parseDeviceCommand(input);
         if (command && !command->room.empty() && !command->device.empty() &&
@@ -532,13 +512,12 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return analysis;
     }
 
-    // No business operation matched.  A tiny topic lookup can still inject
-    // relevant persisted memory into the single normal-chat Gemma call.
+    // 未命中业务操作时，仍可为普通对话检索少量相关记忆。
     if (const auto query = chatMemoryContextQuery(input)) {
         analysis.intent.memory_context_query = *query;
     }
     analysis.intent.include_recent_memory_context = refersToEarlierConversation(input);
-    // Do not spend a separate Gemma call generating an intent JSON first.
+    // 普通对话直接调用模型，不额外生成意图 JSON。
     analysis.matched_rule = "chat";
     return analysis;
 }

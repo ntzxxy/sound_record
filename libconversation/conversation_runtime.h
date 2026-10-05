@@ -20,6 +20,7 @@ class AssistantService;
 
 namespace conversation {
 
+// 文字和语音入口共用的异步调度层，业务处理始终在单个工作线程中串行执行。
 class ConversationRuntime {
 public:
     using EventCallback = std::function<void(const ConversationEvent&)>;
@@ -63,6 +64,7 @@ private:
     mutable std::mutex callback_mutex_;
     EventCallback callback_;
 
+    // 底层模型回调没有用户数据参数，用线程局部变量关联当前请求。
     static thread_local ConversationRuntime* callback_runtime_;
     static thread_local const ConversationRequest* callback_request_;
 };

@@ -72,9 +72,7 @@ int sharedChineseBigrams(const std::string& question, const std::string& field) 
     for (std::size_t i = 0; i + 5 < question.size(); ++i) {
         const unsigned char first = static_cast<unsigned char>(question[i]);
         const unsigned char second = static_cast<unsigned char>(question[i + 3]);
-        // Chinese BMP characters are normally encoded as three bytes in the
-        // supported input. Comparing two-character phrases avoids one-word
-        // category-only matches such as every HABIT being considered relevant.
+        // 中文按双字片段比较，避免单字或分类名造成大面积误匹配。
         if (first < 0xE0 || first > 0xEF || second < 0xE0 || second > 0xEF) continue;
         const std::string phrase = question.substr(i, 6);
         if (std::find(kStopBigrams.begin(), kStopBigrams.end(), phrase) !=
@@ -115,9 +113,7 @@ int relevanceScore(const MemoryItem& item, const MemoryQuery& query) {
         lexical_score += 2 * sharedChineseBigrams(query.query_text, item.condition);
         lexical_score += 2 * sharedChineseBigrams(query.query_text, item.context);
 
-        // A generic memory question must name at least one meaningful concept
-        // present in the candidate. Attribute/category agreement alone is too
-        // weak and previously returned an unrelated habit.
+        // 泛化问题至少要命中一个实际内容词，不能只凭属性或分类返回记忆。
         if (lexical_score < 3) return 0;
         score += lexical_score;
     }
@@ -152,8 +148,7 @@ bool MemoryStore::load() {
         } catch (...) {
             item.updated_at = 0;
         }
-        // Version 1 rows have five fields.  New metadata is appended, keeping
-        // existing board-side memory files readable without a migration.
+        // 旧版只有前五列；新增字段追加在末尾，保证已有板端文件可直接读取。
         if (fields.size() > 5) item.condition = fields[5];
         if (fields.size() > 6) item.context = fields[6];
         if (fields.size() > 7) item.time = fields[7];

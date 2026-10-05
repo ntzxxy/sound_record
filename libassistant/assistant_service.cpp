@@ -572,9 +572,7 @@ bool AssistantService::initialize() {
 ServiceResult AssistantService::process(const std::string& user_input) {
     const RequestAnalysis local = request_router_.analyze(user_input);
 
-    // Continue a known business turn before considering either the local parser
-    // or the LLM. A new explicit business request must not be consumed as a
-    // slot value for an unrelated pending device command.
+    // 有待补全命令时先判断本轮是否为续句；新的明确请求会取消旧追问。
     const bool is_partial_control_continuation =
         local.status == LocalRouteStatus::FastPath &&
         local.intent.intent == IntentType::DeviceControl &&
@@ -599,9 +597,7 @@ ServiceResult AssistantService::process(const std::string& user_input) {
     }
 
     if (local.status == LocalRouteStatus::Chat) {
-        // A normal conversation needs no intent JSON.  Sending it straight to
-        // the conversation runtime avoids the former router-Gemma +
-        // chat-Gemma double inference.
+        // 普通对话无需先生成意图 JSON，直接进入对话模型可避免一轮两次推理。
         IntentResult chat = local.intent;
         chat.intent = IntentType::GeneralChat;
         chat.local_route = true;
@@ -609,9 +605,7 @@ ServiceResult AssistantService::process(const std::string& user_input) {
         return processAnalyzed(user_input, chat);
     }
 
-    // SemanticFallback is a business request.  Gemma gets one chance to
-    // produce a structured intent; an unstructured answer is not allowed to
-    // fall through to a second chat inference or to device execution.
+    // 疑似业务请求只允许模型做一次结构化提取，失败后追问，不再进入第二次推理或设备执行。
     IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
     if (isMemorySemanticHint(local.semantic_hint) && intent.intent == IntentType::Clarify) {
         ServiceResult result;
@@ -624,9 +618,7 @@ ServiceResult AssistantService::process(const std::string& user_input) {
         return result;
     }
     if (intent.intent == IntentType::GeneralChat) {
-        // The structured pass has already consumed the only allowed Gemma
-        // invocation. Preserve a model-provided safe reply when available;
-        // otherwise clarify rather than making a second chat-model call.
+        // 结构化提取已占用本轮模型调用：有安全回复就复用，否则请用户说清楚。
         if (!intent.response_text.empty()) {
             ServiceResult result;
             result.task_type = IntentType::GeneralChat;
@@ -644,8 +636,7 @@ ServiceResult AssistantService::process(const std::string& user_input) {
             "这条设备或记忆请求还不够明确，请换一种说法后再试。";
         return processAnalyzed(user_input, clarify);
     }
-    // Structured business results use deterministic replies after validation,
-    // so intent extraction remains the only Gemma invocation on this branch.
+    // 结构化业务结果在校验后使用固定回复，不再调用模型润色。
     intent.local_route = true;
     return processAnalyzed(user_input, intent);
 }
@@ -658,9 +649,7 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
-    // This guard is intentionally before deterministic intent correction and
-    // pending-slot merge: an explicit non-execution mention of a command must
-    // never reach the device handler merely because it contains control words.
+    // 执行保护必须早于意图纠正和续句合并，避免“不要开灯”因含控制词而被执行。
     if (hasDeviceWord(user_input) && hasControlVerb(user_input) &&
         isExecutionSuppressedControlText(user_input)) {
         pending_device_command_.reset();
@@ -699,6 +688,7 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;
 
     if (pending_device_command_) {
+        // 续句只补充已有槽位；补齐后执行，仍缺参数则最多再追问一次。
         if (isCancelText(user_input)) {
             pending_device_command_.reset();
             pending_device_turns_remaining_ = 0;
