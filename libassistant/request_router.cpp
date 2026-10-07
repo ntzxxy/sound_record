@@ -330,11 +330,6 @@ std::optional<DeviceEvent> parseFaultRecord(const std::string& text) {
     return event.description.empty() ? std::nullopt : std::optional<DeviceEvent>(event);
 }
 
-bool isExplicitDelete(const std::string& text) {
-    return contains(text, "删除") || contains(text, "清除") || contains(text, "清空") ||
-           contains(text, "忘掉") || contains(text, "不要记住");
-}
-
 MemoryDeleteRequest parseDelete(const std::string& text) {
     MemoryDeleteRequest request;
     request.delete_all = (contains(text, "全部") || contains(text, "所有") || contains(text, "清空")) &&
@@ -353,22 +348,6 @@ MemoryDeleteRequest parseDelete(const std::string& text) {
 bool isAmbiguousBulkControl(const std::string& text) {
     return contains(text, "全部") || contains(text, "所有") || contains(text, "除了") ||
            contains(text, "以及") || contains(text, "和");
-}
-
-bool hasFaultSymptom(const std::string& text) {
-    return contains(text, "不制冷") || contains(text, "异响") || contains(text, "闪烁") ||
-                           contains(text, "漏水") || contains(text, "故障") || contains(text, "异常") ||
-           contains(text, "不亮") || contains(text, "没反应") || contains(text, "失灵") ||
-           contains(text, "卡住") || contains(text, "不摆动") || contains(text, "嗡嗡") ||
-           contains(text, "不工作") || contains(text, "坏了");
-}
-
-std::string semanticCandidateHint(const std::string& text) {
-    if (hasFaultSymptom(text) && (contains(text, "空调") || contains(text, "灯") ||
-                                  contains(text, "设备"))) {
-        return "device_fault_report";
-    }
-    return "";
 }
 
 std::optional<MemoryQuery> chatMemoryContextQuery(const std::string& text) {
@@ -399,7 +378,29 @@ RequestAnalysis fastResult(IntentResult intent, const char* rule) {
     return analysis;
 }
 
+RequestAnalysis semanticFallback(const SemanticRouteResult& route,
+                                 const char* rule,
+                                 const char* hint) {
+    RequestAnalysis analysis;
+    analysis.status = LocalRouteStatus::SemanticFallback;
+    analysis.semantic_route = route;
+    analysis.matched_rule = rule;
+    analysis.semantic_hint = hint;
+    return analysis;
+}
+
+bool isExecutionSuppressed(const std::string& text) {
+    return (contains(text, "不要") && hasControlVerb(text)) ||
+           contains(text, "不要执行") || contains(text, "不执行") ||
+           contains(text, "先别") || contains(text, "别执行") ||
+           contains(text, "保持当前状态") || contains(text, "保持原样") ||
+           contains(text, "只是台词") || contains(text, "原样复述");
+}
+
 }  // namespace
+
+RequestRouter::RequestRouter(std::shared_ptr<const SemanticIntentRouter> semantic_router)
+    : semantic_router_(std::move(semantic_router)) {}
 
 RequestAnalysis RequestRouter::analyze(const std::string& input) const {
     RequestAnalysis analysis;
@@ -410,115 +411,121 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return fastResult(std::move(intent), "empty_input");
     }
 
-    // “查询记录”的优先级高于故障描述中的泛化“记录”词。
-    if (const auto query = parseRecordQuery(input)) {
+    // Hard guards are intentionally small and deterministic.  In particular,
+    // a semantic DEVICE_CONTROL score can never override execution suppression.
+    if (isExecutionSuppressed(input)) {
         IntentResult intent;
-        intent.intent = IntentType::RecordQuery;
-        intent.record_query = *query;
-        return fastResult(std::move(intent), "record_query");
+        intent.intent = IntentType::GeneralChat;
+        return fastResult(std::move(intent), "execution_suppressed");
     }
 
-    if (const auto fault = parseFaultRecord(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::DeviceFault;
-        intent.device_event = *fault;
-        return fastResult(std::move(intent), "fault_record");
-    }
+    const SemanticRouteResult route = semantic_router_
+                                          ? semantic_router_->classify(input)
+                                          : SemanticRouteResult{};
+    analysis.semantic_route = route;
 
-    if (isExplicitDelete(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::MemoryDelete;
-        intent.memory_delete = parseDelete(input);
-        return fastResult(std::move(intent), "memory_delete");
-    }
-
-    if (const auto location = parseObjectLocationWrite(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::MemoryWrite;
-        intent.memory = *location;
-        return fastResult(std::move(intent), "object_location_write");
-    }
-
-    if (const auto query = parseExactLocationQuery(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::MemoryQuery;
-        intent.memory_query = *query;
-        return fastResult(std::move(intent), "exact_location_query");
-    }
-
-    if (const auto query = parsePreferenceQuery(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::MemoryQuery;
-        intent.memory_query = *query;
-        return fastResult(std::move(intent), "preference_query");
-    }
-
-    if (const auto query = parseMemoryQueryCandidate(input)) {
-        IntentResult intent;
-        intent.intent = IntentType::MemoryQuery;
-        intent.memory_query = *query;
-        return fastResult(std::move(intent), "memory_query_candidate");
-    }
-
-    const std::string candidate_hint = semanticCandidateHint(input);
-    if (!candidate_hint.empty()) {
-        analysis.status = LocalRouteStatus::SemanticFallback;
-        analysis.matched_rule = "semantic_candidate";
-        analysis.semantic_hint = candidate_hint;
-        return analysis;
-    }
-
-    // 明确偏好交给结构化提取，防止本地控制规则把偏好误执行为设备动作。
-    if (hasExplicitMemoryWrite(input)) {
-        analysis.status = LocalRouteStatus::SemanticFallback;
-        analysis.matched_rule = "explicit_memory_write";
-        analysis.semantic_hint = "explicit_memory_write";
-        return analysis;
-    }
-
-    // 明确但不完整的设备操作进入追问状态，只询问缺失槽位。
-    if ((contains(input, "操作") || contains(input, "控制"))) {
-        const auto command = parseDeviceCommand(input);
-        if (command && !command->room.empty() && !command->device.empty() &&
-            command->action.empty()) {
-            IntentResult intent;
-            intent.intent = IntentType::DeviceControl;
-            intent.device_command = *command;
-            return fastResult(std::move(intent), "device_control_missing_action");
+    switch (route.route) {
+        case SemanticRoute::DeviceControl: {
+            // The semantic result selects this parser; it does not create an
+            // executable command.  Missing/complex slots go to structured extraction.
+            if ((contains(input, "操作") || contains(input, "控制"))) {
+                const auto command = parseDeviceCommand(input);
+                if (command && !command->room.empty() && !command->device.empty() &&
+                    command->action.empty()) {
+                    IntentResult intent;
+                    intent.intent = IntentType::DeviceControl;
+                    intent.device_command = *command;
+                    RequestAnalysis result = fastResult(std::move(intent), "device_control_missing_action");
+                    result.semantic_route = route;
+                    return result;
+                }
+            }
+            if (isAmbiguousBulkControl(input)) {
+                return semanticFallback(route, "device_control_complex", "device_control");
+            }
+            const LocalDeviceControlMatch match = matchLocalDeviceControl(input);
+            if (match.status == DeviceCommandMatch::FullMatch ||
+                match.status == DeviceCommandMatch::PartialMatch) {
+                IntentResult intent;
+                intent.intent = IntentType::DeviceControl;
+                intent.device_command = match.command;
+                RequestAnalysis result = fastResult(
+                    std::move(intent), match.status == DeviceCommandMatch::FullMatch
+                                           ? "device_control_full_match"
+                                           : "device_control_partial_match");
+                result.semantic_route = route;
+                return result;
+            }
+            return semanticFallback(route, "device_control_parser_fallback", "device_control");
         }
+        case SemanticRoute::MemoryWrite: {
+            if (const auto location = parseObjectLocationWrite(input)) {
+                IntentResult intent;
+                intent.intent = IntentType::MemoryWrite;
+                intent.memory = *location;
+                RequestAnalysis result = fastResult(std::move(intent), "object_location_write");
+                result.semantic_route = route;
+                return result;
+            }
+            return semanticFallback(route, "memory_write_parser_fallback", "explicit_memory_write");
+        }
+        case SemanticRoute::MemoryQuery: {
+            std::optional<MemoryQuery> query = parseExactLocationQuery(input);
+            if (!query) query = parsePreferenceQuery(input);
+            if (!query) query = parseMemoryQueryCandidate(input);
+            if (query) {
+                IntentResult intent;
+                intent.intent = IntentType::MemoryQuery;
+                intent.memory_query = *query;
+                RequestAnalysis result = fastResult(std::move(intent), "memory_query_parser");
+                result.semantic_route = route;
+                return result;
+            }
+            return semanticFallback(route, "memory_query_parser_fallback", "memory_query");
+        }
+        case SemanticRoute::MemoryDelete: {
+            IntentResult intent;
+            intent.intent = IntentType::MemoryDelete;
+            intent.memory_delete = parseDelete(input);
+            RequestAnalysis result = fastResult(std::move(intent), "memory_delete_parser");
+            result.semantic_route = route;
+            return result;
+        }
+        case SemanticRoute::DeviceFault: {
+            if (const auto fault = parseFaultRecord(input)) {
+                IntentResult intent;
+                intent.intent = IntentType::DeviceFault;
+                intent.device_event = *fault;
+                RequestAnalysis result = fastResult(std::move(intent), "fault_record_parser");
+                result.semantic_route = route;
+                return result;
+            }
+            return semanticFallback(route, "device_fault_parser_fallback", "device_fault_report");
+        }
+        case SemanticRoute::RecordQuery: {
+            if (const auto query = parseRecordQuery(input)) {
+                IntentResult intent;
+                intent.intent = IntentType::RecordQuery;
+                intent.record_query = *query;
+                RequestAnalysis result = fastResult(std::move(intent), "record_query_parser");
+                result.semantic_route = route;
+                return result;
+            }
+            return semanticFallback(route, "record_query_parser_fallback", "record_query");
+        }
+        case SemanticRoute::WeatherQuery:
+            return semanticFallback(route, "weather_query_parser_fallback", "weather_query");
+        case SemanticRoute::None:
+            break;
     }
 
-    if (isAmbiguousBulkControl(input)) {
-        analysis.status = LocalRouteStatus::SemanticFallback;
-        analysis.matched_rule = "semantic_fallback";
-        return analysis;
-    }
-
-    const LocalDeviceControlMatch device_match = matchLocalDeviceControl(input);
-    if (device_match.status == DeviceCommandMatch::FullMatch ||
-        device_match.status == DeviceCommandMatch::PartialMatch) {
-        IntentResult intent;
-        intent.intent = IntentType::DeviceControl;
-        intent.device_command = device_match.command;
-        return fastResult(std::move(intent),
-                          device_match.status == DeviceCommandMatch::FullMatch
-                              ? "device_control_full_match"
-                              : "device_control_partial_match");
-    }
-    if (device_match.status == DeviceCommandMatch::ComplexCandidate) {
-        analysis.status = LocalRouteStatus::SemanticFallback;
-        analysis.matched_rule = "complex_device_control";
-        analysis.semantic_hint = "complex_device_control";
-        return analysis;
-    }
-
-    // 未命中业务操作时，仍可为普通对话检索少量相关记忆。
+    // NONE is the rejection/general-chat route.  Context lookup is ancillary;
+    // it cannot turn the request into a business action.
     if (const auto query = chatMemoryContextQuery(input)) {
         analysis.intent.memory_context_query = *query;
     }
     analysis.intent.include_recent_memory_context = refersToEarlierConversation(input);
-    // 普通对话直接调用模型，不额外生成意图 JSON。
-    analysis.matched_rule = "chat";
+    analysis.matched_rule = "semantic_none";
     return analysis;
 }
 

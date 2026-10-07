@@ -107,6 +107,20 @@ bool isMemorySemanticHint(const std::string& hint) {
     return hint == "explicit_memory_write";
 }
 
+bool matchesSemanticRoute(IntentType intent, SemanticRoute route) {
+    switch (route) {
+        case SemanticRoute::DeviceControl: return intent == IntentType::DeviceControl;
+        case SemanticRoute::MemoryWrite: return intent == IntentType::MemoryWrite;
+        case SemanticRoute::MemoryQuery: return intent == IntentType::MemoryQuery;
+        case SemanticRoute::MemoryDelete: return intent == IntentType::MemoryDelete;
+        case SemanticRoute::DeviceFault: return intent == IntentType::DeviceFault;
+        case SemanticRoute::RecordQuery: return intent == IntentType::RecordQuery;
+        case SemanticRoute::WeatherQuery: return intent == IntentType::WeatherQuery;
+        case SemanticRoute::None: return intent == IntentType::GeneralChat;
+    }
+    return false;
+}
+
 bool hasDeviceWord(const std::string& text) {
     static constexpr const char* kDeviceWords[] = {
         "空气净化器", "扫地机器人", "加湿器", "热水器", "洗衣机",
@@ -553,8 +567,10 @@ MemoryDeleteRequest inferMemoryDeleteRequest(const std::string& text) {
 }  // namespace
 
 AssistantService::AssistantService(const std::string& memory_path,
-                                   const std::string& event_log_path)
-    : memory_store_(memory_path),
+                                   const std::string& event_log_path,
+                                   std::shared_ptr<const SemanticIntentRouter> semantic_router)
+    : request_router_(std::move(semantic_router)),
+      memory_store_(memory_path),
       event_log_(event_log_path.empty() ? defaultEventLogPath(memory_path) : event_log_path) {}
 
 bool AssistantService::initialize() {
@@ -607,6 +623,18 @@ ServiceResult AssistantService::process(const std::string& user_input) {
 
     // 疑似业务请求只允许模型做一次结构化提取，失败后追问，不再进入第二次推理或设备执行。
     IntentResult intent = intent_preprocessor_.analyze(user_input, local.semantic_hint);
+    if (intent.intent != IntentType::Clarify && intent.intent != IntentType::GeneralChat &&
+        !matchesSemanticRoute(intent.intent, local.semantic_route.route)) {
+        ServiceResult result;
+        result.task_type = IntentType::Clarify;
+        result.intent_latency_ms = intent.intent_latency_ms;
+        result.call_llm = false;
+        result.fixed_reply = "结构化结果与业务类型不一致，请换一种说法后再试。";
+        std::cout << "[SemanticRouteGuard] expected="
+                  << toString(local.semantic_route.route)
+                  << " actual=" << toString(intent.intent) << std::endl;
+        return result;
+    }
     if (isMemorySemanticHint(local.semantic_hint) && intent.intent == IntentType::Clarify) {
         ServiceResult result;
         result.task_type = IntentType::Clarify;

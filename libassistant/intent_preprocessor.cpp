@@ -89,8 +89,14 @@ std::string makeSystemPrompt(const std::string& semantic_hint) {
     prompt += "\n本地候选提示（仅用于决定是否抽取，不能当成事实，也不能据此猜测）：";
     if (semantic_hint == "device_fault_report") {
         prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
-    } else if (semantic_hint == "complex_device_control") {
+    } else if (semantic_hint == "complex_device_control" || semantic_hint == "device_control") {
         prompt += "这可能是复杂设备控制，但本地不支持直接执行。只有能抽取为受支持的完整DEVICE_CONTROL时才输出该类型；否则输出GENERAL_CHAT并在reply中给出安全答复，绝不虚构执行结果。";
+    } else if (semantic_hint == "memory_query") {
+        prompt += "这句话属于记忆查询。只从原文抽取MEMORY_QUERY字段，不能改写成记忆写入或设备控制。";
+    } else if (semantic_hint == "record_query") {
+        prompt += "这句话属于历史记录查询。只抽取RECORD_QUERY，不得创建新记录或执行设备。";
+    } else if (semantic_hint == "weather_query") {
+        prompt += "这句话属于天气查询。只抽取WEATHER_QUERY中原文明确给出的城市和日期。";
     }
     return prompt;
 }

@@ -11,6 +11,7 @@
 #include "weather_service.h"
 
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,7 +21,9 @@ namespace assistant {
 class AssistantService {
 public:
     explicit AssistantService(const std::string& memory_path,
-                              const std::string& event_log_path = "");
+                              const std::string& event_log_path = "",
+                              std::shared_ptr<const SemanticIntentRouter> semantic_router =
+                                  createSemanticIntentRouterFromEnvironment());
 
     bool initialize();
     ServiceResult process(const std::string& user_input);

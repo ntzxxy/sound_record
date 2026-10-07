@@ -60,6 +60,29 @@ struct MemoryItem {
     int confidence{100};
 };
 
+// Coarse semantic classification is deliberately separate from IntentResult:
+// it selects a business parser but never carries executable device slots.
+enum class SemanticRoute {
+    DeviceControl,
+    MemoryWrite,
+    MemoryQuery,
+    MemoryDelete,
+    DeviceFault,
+    RecordQuery,
+    WeatherQuery,
+    None
+};
+
+struct SemanticRouteResult {
+    SemanticRoute route{SemanticRoute::None};
+    float top1_score{0.0F};
+    float top2_score{0.0F};
+    float margin{0.0F};
+    std::string matched_example;
+    double latency_ms{0.0};
+    bool available{false};
+};
+
 struct MemoryQuery {
     std::string subject;
     std::string attribute;
@@ -136,6 +159,7 @@ struct RequestAnalysis {
     std::string matched_rule;
     // 本地推断的候选类型只用于缩小模型提示范围，不能单独持久化或执行。
     std::string semantic_hint;
+    SemanticRouteResult semantic_route;
 };
 
 struct ServiceResult {
@@ -154,6 +178,7 @@ struct ServiceResult {
 };
 
 const char* toString(IntentType type);
+const char* toString(SemanticRoute route);
 std::optional<IntentType> intentTypeFromString(const std::string& value);
 const char* toString(RecordType type);
 std::optional<RecordType> recordTypeFromString(const std::string& value);

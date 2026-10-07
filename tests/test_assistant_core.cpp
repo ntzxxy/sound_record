@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <optional>
+#include <unordered_map>
 
 namespace {
 
@@ -33,6 +35,9 @@ using assistant::MemoryStore;
 using assistant::LocalRouteStatus;
 using assistant::RequestRouter;
 using assistant::ServiceResult;
+using assistant::SemanticIntentRouter;
+using assistant::SemanticRoute;
+using assistant::SemanticRouteResult;
 using assistant::WeatherQuery;
 using assistant::WeatherQueryValidator;
 using assistant::NormalizedWeatherQuery;
@@ -111,10 +116,100 @@ int countTriple(const std::vector<MemoryItem>& items,
     return count;
 }
 
+class TestSemanticIntentRouter final : public SemanticIntentRouter {
+public:
+    explicit TestSemanticIntentRouter(std::unordered_map<std::string, SemanticRoute> routes)
+        : routes_(std::move(routes)) {}
+
+    SemanticRouteResult classify(const std::string& text) const override {
+        SemanticRouteResult result;
+        result.available = true;
+        result.top1_score = 0.91F;
+        result.top2_score = 0.37F;
+        result.margin = 0.54F;
+        result.matched_example = text;
+        const auto it = routes_.find(text);
+        result.route = it == routes_.end() ? SemanticRoute::None : it->second;
+        return result;
+    }
+
+private:
+    std::unordered_map<std::string, SemanticRoute> routes_;
+};
+
+std::shared_ptr<const SemanticIntentRouter> makeTestSemanticRouter() {
+    using R = SemanticRoute;
+    return std::make_shared<TestSemanticIntentRouter>(
+        std::unordered_map<std::string, R>{
+            {"请记住我不喜欢太刺眼的光", R::MemoryWrite},
+            {"打开空调", R::DeviceControl},
+            {"打开客厅的灯", R::DeviceControl},
+            {"请打开阳台风扇。", R::DeviceControl},
+            {"让卧室空调切换到制热模式。", R::DeviceControl},
+            {"把客厅的灯设置成暖光", R::DeviceControl},
+            {"请记住，我睡觉时喜欢把空调设为二十五度。", R::MemoryWrite},
+            {"空调怎么好像不工作了？", R::DeviceFault},
+            {"你还记得我不喜欢哪种光吗？", R::MemoryQuery},
+            {"我的玄凤鹦鹉现在叫什么？", R::MemoryQuery},
+            {"我要操作客厅灯，但还没决定是开还是关。", R::DeviceControl},
+            {"请操作卧室空调，开机还是关机我下一句再告诉你。", R::DeviceControl},
+            {"请记录，卧室灯持续发出嗡嗡声，亮度没有变化。", R::DeviceFault},
+            {"把客厅灯设置为二十度", R::DeviceControl},
+            {"把卧室空调设成比当前低两度，但还没有当前温度。", R::DeviceControl},
+            {"客厅空调设为二十度，但还没确定摄氏还是华氏。", R::DeviceControl},
+            {"请记录，客厅空调不制冷", R::DeviceFault},
+            {"请记住，我的钥匙放在客厅鞋柜第二层", R::MemoryWrite},
+            {"我的钥匙放在哪里", R::MemoryQuery},
+            {"查看设备故障记录", R::RecordQuery},
+            {"查询设备故障记录", R::RecordQuery},
+            {"我有哪些偏好", R::RecordQuery},
+            {"我喜欢空调26度", R::MemoryWrite},
+            {"把空调调到26度", R::DeviceControl},
+            {"我喜欢暖光", R::MemoryWrite},
+            {"把灯调成暖光", R::DeviceControl},
+            {"空调为什么不制冷", R::DeviceFault},
+            {"请记录空调不制冷", R::DeviceFault},
+            {"怎么打开空调", R::None},
+            {"帮我打开空调", R::DeviceControl},
+            {"不要打开客厅灯", R::DeviceControl},
+            {"今天上海天气怎么样", R::WeatherQuery},
+            {"忘掉雨伞的位置", R::MemoryDelete},
+        });
+}
+
 }  // namespace
 
 int main() {
     resetTestFile();
+
+    if (std::getenv("SOUND_RECORD_SEMANTIC_ROUTER_MODEL_DIR")) {
+        const auto runtime_router = assistant::createSemanticIntentRouterFromEnvironment();
+        const auto control = runtime_router->classify("把空调调到26度");
+        const auto preference = runtime_router->classify("我喜欢空调26度");
+        const auto fault = runtime_router->classify("空调为什么不制冷");
+        const auto weather = runtime_router->classify("今天上海天气怎么样");
+        const auto none = runtime_router->classify("暖光有什么优点");
+        std::cerr << "[SemanticRouterProbe] control=" << assistant::toString(control.route)
+                  << ':' << control.top1_score << '/' << control.margin
+                  << " preference=" << assistant::toString(preference.route)
+                  << ':' << preference.top1_score << '/' << preference.margin
+                  << " fault=" << assistant::toString(fault.route)
+                  << ':' << fault.top1_score << '/' << fault.margin
+                  << " weather=" << assistant::toString(weather.route)
+                  << ':' << weather.top1_score << '/' << weather.margin
+                  << " none=" << assistant::toString(none.route)
+                  << ':' << none.top1_score << '/' << none.margin << std::endl;
+        CHECK(control.available);
+        CHECK(control.route == SemanticRoute::DeviceControl);
+        CHECK(preference.route == SemanticRoute::MemoryWrite);
+        CHECK(fault.route == SemanticRoute::DeviceFault);
+        CHECK(weather.route == SemanticRoute::WeatherQuery);
+        CHECK(none.route == SemanticRoute::None);
+        CHECK(control.top1_score >= control.top2_score);
+        CHECK(control.margin == control.top1_score - control.top2_score);
+        CHECK(!control.matched_example.empty());
+        CHECK(control.latency_ms > 0.0);
+    }
 
     {
         IntentJsonParser parser;
@@ -389,7 +484,7 @@ int main() {
     resetTestFile();
 
     {
-        AssistantService service(kTestMemoryPath, kTestEventPath);
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
         ServiceResult pending = service.process("打开空调");
         CHECK(pending.task_type == IntentType::Clarify);
 
@@ -474,7 +569,7 @@ int main() {
 
     resetTestFile();
     {
-        RequestRouter router;
+        RequestRouter router(makeTestSemanticRouter());
         CHECK(router.analyze("你好，今天心情怎么样？").status == LocalRouteStatus::Chat);
         CHECK(router.analyze("请记住我不喜欢太刺眼的光").status ==
               LocalRouteStatus::SemanticFallback);
@@ -530,7 +625,7 @@ int main() {
               LocalRouteStatus::FastPath);
         const auto complex_control = router.analyze("把客厅的灯设置成暖光");
         CHECK(complex_control.status == LocalRouteStatus::SemanticFallback);
-        CHECK(complex_control.semantic_hint == "complex_device_control");
+        CHECK(complex_control.semantic_hint == "device_control");
         CHECK(router.analyze("嗯，帮我想一个睡前放松的办法。").status ==
               LocalRouteStatus::Chat);
         const auto explicit_memory = router.analyze("请记住，我睡觉时喜欢把空调设为二十五度。");
@@ -544,7 +639,28 @@ int main() {
         CHECK(reading_context.intent.memory_context_query);
         CHECK(reading_context.intent.memory_context_query->subject == "阅读");
 
-        AssistantService service(kTestMemoryPath, kTestEventPath);
+        // Coarse semantics only selects a parser.  It never constructs an
+        // executable command and uncertain/non-business input remains chat.
+        CHECK(router.analyze("我喜欢空调26度").semantic_route.route ==
+              SemanticRoute::MemoryWrite);
+        CHECK(router.analyze("我喜欢空调26度").status ==
+              LocalRouteStatus::SemanticFallback);
+        CHECK(router.analyze("把空调调到26度").intent.intent == IntentType::DeviceControl);
+        CHECK(router.analyze("我喜欢暖光").semantic_route.route == SemanticRoute::MemoryWrite);
+        CHECK(router.analyze("把灯调成暖光").status == LocalRouteStatus::SemanticFallback);
+        CHECK(router.analyze("空调为什么不制冷").semantic_route.route ==
+              SemanticRoute::DeviceFault);
+        CHECK(router.analyze("请记录空调不制冷").intent.intent == IntentType::DeviceFault);
+        CHECK(router.analyze("怎么打开空调").status == LocalRouteStatus::Chat);
+        CHECK(router.analyze("帮我打开空调").intent.intent == IntentType::DeviceControl);
+        const auto suppressed = router.analyze("不要打开客厅灯");
+        CHECK(suppressed.status == LocalRouteStatus::FastPath);
+        CHECK(suppressed.intent.intent == IntentType::GeneralChat);
+        CHECK(router.analyze("今天上海天气怎么样").semantic_route.route ==
+              SemanticRoute::WeatherQuery);
+        CHECK(router.analyze("忘掉雨伞的位置").intent.intent == IntentType::MemoryDelete);
+
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
 
         // A business-shaped request that the structured model cannot resolve
         // must fail closed instead of starting a second chat-model turn.
@@ -762,7 +878,7 @@ int main() {
     resetTestFile();
 
     {
-        AssistantService service(kTestMemoryPath, kTestEventPath);
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
         IntentResult fault;
         fault.intent = IntentType::DeviceFault;
         fault.device_event = makeEvent("卧室", "空调", "FAULT", "不制冷", 0);
@@ -866,7 +982,7 @@ int main() {
     resetTestFile();
 
     {
-        AssistantService service(kTestMemoryPath, kTestEventPath);
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
         IntentResult write;
         write.intent = IntentType::MemoryWrite;
         write.memory = makeItem("USER_PREFERENCE", "玄凤鹦鹉", "名称", "米粒", 0);

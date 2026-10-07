@@ -4,6 +4,20 @@
 
 namespace assistant {
 
+const char* toString(SemanticRoute route) {
+    switch (route) {
+        case SemanticRoute::DeviceControl: return "DEVICE_CONTROL";
+        case SemanticRoute::MemoryWrite: return "MEMORY_WRITE";
+        case SemanticRoute::MemoryQuery: return "MEMORY_QUERY";
+        case SemanticRoute::MemoryDelete: return "MEMORY_DELETE";
+        case SemanticRoute::DeviceFault: return "DEVICE_FAULT";
+        case SemanticRoute::RecordQuery: return "RECORD_QUERY";
+        case SemanticRoute::WeatherQuery: return "WEATHER_QUERY";
+        case SemanticRoute::None: return "NONE";
+    }
+    return "NONE";
+}
+
 const char* toString(IntentType type) {
     switch (type) {
         case IntentType::GeneralChat: return "GENERAL_CHAT";
