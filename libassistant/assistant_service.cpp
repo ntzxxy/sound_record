@@ -390,6 +390,53 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
     return command;
 }
 
+std::optional<DeviceCommand> inferDialogueFocusFromText(const std::string& text) {
+    const std::optional<DeviceCommand> inferred = inferDeviceSlotsFromText(text);
+    if (!inferred) return std::nullopt;
+
+    // 同一句里出现多个房间或设备时不建立焦点，避免下一轮猜错对象。
+    int room_count = 0;
+    static constexpr const char* kRooms[] = {
+        "卧室", "客厅", "厨房", "卫生间", "厕所",
+        "阳台", "书房", "餐厅", "儿童房", "玄关",
+    };
+    for (const char* room : kRooms) {
+        if (containsText(text, room)) ++room_count;
+    }
+    // “卫生间/厕所”是同一个规范房间，两个词同时出现仍只算一个候选。
+    if (containsText(text, "卫生间") && containsText(text, "厕所")) --room_count;
+
+    int device_count = 0;
+    static constexpr const char* kDevices[] = {
+        "空气净化器", "扫地机器人", "加湿器", "热水器", "洗衣机",
+        "空调", "风扇", "窗帘", "电视", "冰箱", "插座", "门锁", "音箱", "灯",
+    };
+    for (const char* device : kDevices) {
+        if (containsText(text, device)) ++device_count;
+    }
+    if (room_count > 1 || device_count > 1) return std::nullopt;
+
+    DeviceCommand focus;
+    focus.room = inferred->room;
+    focus.device = inferred->device;
+
+    // 环境描述只形成“灯”的候选焦点，绝不推断打开/关闭动作，更不会在本轮执行。
+    const bool lighting_problem = containsText(text, "有点黑") ||
+                                  containsText(text, "太黑") ||
+                                  containsText(text, "很黑") ||
+                                  containsText(text, "有点暗") ||
+                                  containsText(text, "太暗") ||
+                                  containsText(text, "很暗") ||
+                                  containsText(text, "光线暗") ||
+                                  containsText(text, "看不清");
+    if (!focus.room.empty() && focus.device.empty() && lighting_problem) {
+        focus.device = "灯";
+    }
+
+    if (focus.room.empty() && focus.device.empty()) return std::nullopt;
+    return focus;
+}
+
 DeviceCommand applyDeterministicDeviceSlots(const DeviceCommand& command,
                                             const std::optional<DeviceCommand>& inferred) {
     if (!inferred) return command;
@@ -648,9 +695,12 @@ ServiceResult AssistantService::process(const std::string& user_input) {
     if (intent.intent == IntentType::GeneralChat) {
         // 结构化提取已占用本轮模型调用：有安全回复就复用，否则请用户说清楚。
         if (!intent.response_text.empty()) {
-            ServiceResult result;
+            IntentResult chat = intent;
+            chat.intent = IntentType::GeneralChat;
+            chat.local_route = true;
+            chat.json_valid = true;
+            ServiceResult result = processAnalyzed(user_input, chat);
             result.task_type = IntentType::GeneralChat;
-            result.intent_latency_ms = intent.intent_latency_ms;
             result.call_llm = false;
             result.fixed_reply = intent.response_text;
             return result;
@@ -676,6 +726,19 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     result.task_type = intent.intent;
     result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
+
+    // 焦点只跨一个用户回合：先取出上一轮焦点，再用本轮明确实体准备下一轮焦点。
+    std::optional<DeviceCommand> previous_focus;
+    if (dialogue_focus_ && dialogue_focus_turns_remaining_ > 0) {
+        previous_focus = dialogue_focus_;
+    }
+    dialogue_focus_.reset();
+    dialogue_focus_turns_remaining_ = 0;
+    if (!isCancelText(user_input) && !hasControlVerb(user_input) &&
+        !isExecutionSuppressedControlText(user_input)) {
+        dialogue_focus_ = inferDialogueFocusFromText(user_input);
+        if (dialogue_focus_) dialogue_focus_turns_remaining_ = 1;
+    }
 
     // 执行保护必须早于意图纠正和续句合并，避免“不要开灯”因含控制词而被执行。
     if (hasDeviceWord(user_input) && hasControlVerb(user_input) &&
@@ -711,6 +774,27 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
         std::cout << "[IntentCorrection] forced_memory_delete" << std::endl;
     } else if (intent.intent == IntentType::DeviceControl && intent.device_command) {
         intent.device_command = applyDeterministicDeviceSlots(*intent.device_command, inferred_command);
+    }
+
+    // 只有本轮已经给出明确动作时才使用上一轮焦点，并且只补当前缺失的房间/设备。
+    // 本轮显式槽位始终优先；焦点本身不携带动作，因此不会把普通对话变成执行命令。
+    if (previous_focus && intent.intent == IntentType::DeviceControl && intent.device_command &&
+        !intent.device_command->action.empty() &&
+        !isInformationalControlQuestion(user_input) &&
+        !isExecutionSuppressedControlText(user_input)) {
+        bool filled = false;
+        if (intent.device_command->room.empty() && !previous_focus->room.empty()) {
+            intent.device_command->room = previous_focus->room;
+            filled = true;
+        }
+        if (intent.device_command->device.empty() && !previous_focus->device.empty()) {
+            intent.device_command->device = previous_focus->device;
+            filled = true;
+        }
+        if (filled) {
+            std::cout << "[DialogueFocus] filled room=" << intent.device_command->room
+                      << " device=" << intent.device_command->device << std::endl;
+        }
     }
 
     std::cout << "[TaskClass] " << toString(result.task_type) << std::endl;

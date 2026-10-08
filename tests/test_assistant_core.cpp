@@ -567,6 +567,103 @@ int main() {
         CHECK(!later.device_command);
     }
 
+    {
+        // 普通环境描述只建立一轮房间/设备焦点；下一轮必须自己带有明确动作。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        ServiceResult observation = service.processAnalyzed("卧室有点黑", chat);
+        CHECK(observation.task_type == IntentType::GeneralChat);
+        CHECK(observation.call_llm);
+        CHECK(!observation.device_command);
+
+        IntentResult turn_on;
+        turn_on.intent = IntentType::DeviceControl;
+        turn_on.device_command = makeCommand("", "灯", "TURN_ON");
+        ServiceResult completed = service.processAnalyzed("那打开灯吧", turn_on);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_light");
+    }
+
+    {
+        // 覆盖 Qt 实际使用的完整 process() 入口，而不只测试预解析接口。
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
+        ServiceResult observation = service.process("卧室有点黑");
+        CHECK(observation.task_type == IntentType::GeneralChat);
+        CHECK(observation.call_llm);
+
+        ServiceResult completed = service.process("那打开灯吧");
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_light");
+    }
+
+    {
+        // 本轮明确说出的房间优先，不能被上一轮焦点覆盖。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        service.processAnalyzed("卧室有点黑", chat);
+
+        IntentResult explicit_command;
+        explicit_command.intent = IntentType::DeviceControl;
+        explicit_command.device_command = makeCommand("客厅", "灯", "TURN_ON");
+        ServiceResult completed = service.processAnalyzed("打开客厅灯", explicit_command);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "living_room_light");
+    }
+
+    {
+        // 焦点只保留到紧接着的一轮；中间插入闲聊后仍应询问房间。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        service.processAnalyzed("卧室有点黑", chat);
+        service.processAnalyzed("我们先聊点别的", chat);
+
+        IntentResult turn_on;
+        turn_on.intent = IntentType::DeviceControl;
+        turn_on.device_command = makeCommand("", "灯", "TURN_ON");
+        ServiceResult clarify = service.processAnalyzed("打开灯", turn_on);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+        CHECK(clarify.fixed_reply == "请问要控制哪个房间的灯？");
+    }
+
+    {
+        // 焦点不提供动作；没有说开或关时仍必须澄清，不能直接执行。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        service.processAnalyzed("卧室有点黑", chat);
+
+        IntentResult no_action;
+        no_action.intent = IntentType::DeviceControl;
+        no_action.device_command = makeCommand("", "灯", "");
+        ServiceResult clarify = service.processAnalyzed("灯", no_action);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.device_command);
+    }
+
+    {
+        // 同一轮出现多个房间时不猜测焦点。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        service.processAnalyzed("卧室和客厅都有点黑", chat);
+
+        IntentResult turn_on;
+        turn_on.intent = IntentType::DeviceControl;
+        turn_on.device_command = makeCommand("", "灯", "TURN_ON");
+        ServiceResult clarify = service.processAnalyzed("打开灯", turn_on);
+        CHECK(clarify.task_type == IntentType::Clarify);
+        CHECK(!clarify.call_llm);
+    }
+
     resetTestFile();
     {
         RequestRouter router(makeTestSemanticRouter());
