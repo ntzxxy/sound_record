@@ -9,6 +9,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
@@ -36,11 +37,6 @@ QString eventName(conversation::EventType type) {
 
 QString nowText() {
     return QDateTime::currentDateTime().toString("HH:mm:ss");
-}
-
-QString unixTimeText(int64_t timestamp) {
-    if (timestamp <= 0) return QStringLiteral("--");
-    return QDateTime::fromSecsSinceEpoch(timestamp).toString("yyyy-MM-dd HH:mm:ss");
 }
 
 QString csvField(QString value) {
@@ -146,7 +142,7 @@ public:
                 if (reply_open_) conversation_view_->appendPlainText(QString());
                 reply_open_ = false;
                 finishTurn(event, QStringLiteral("ok"));
-                refreshHistory();
+                refreshDevices();
                 statusBar()->showMessage(QStringLiteral("本轮对话完成"));
                 send_button_->setEnabled(true);
                 break;
@@ -227,34 +223,28 @@ private:
         log_layout->addWidget(event_log_);
         right_tabs->addTab(log_page, QStringLiteral("运行事件"));
 
-        auto* history_page = new QWidget(right_tabs);
-        auto* history_layout = new QVBoxLayout(history_page);
-        auto* history_hint = new QLabel(
-            QStringLiteral("长期记忆需要明确请求：可说“请记住，钥匙放在玄关”，"
-                           "“请记住，我喜欢 26 度”，或“请记录，客厅灯坏了”。"),
-            history_page);
-        history_hint->setWordWrap(true);
-        history_hint->setStyleSheet(QStringLiteral("color: #64748B;"));
-        history_layout->addWidget(history_hint);
-        auto* refresh_history_button = new QPushButton(QStringLiteral("刷新记录"), history_page);
-        history_layout->addWidget(refresh_history_button, 0, Qt::AlignLeft);
-
-        auto* history_tabs = new QTabWidget(history_page);
-        object_locations_table_ = createHistoryTable(
-            {QStringLiteral("物品"), QStringLiteral("属性"), QStringLiteral("位置"),
-             QStringLiteral("更新时间"), QStringLiteral("操作")}, history_tabs);
-        preferences_table_ = createHistoryTable(
-            {QStringLiteral("类别"), QStringLiteral("主题"), QStringLiteral("属性"),
-             QStringLiteral("内容"), QStringLiteral("更新时间"), QStringLiteral("操作")}, history_tabs);
-        device_faults_table_ = createHistoryTable(
-            {QStringLiteral("房间"), QStringLiteral("设备"), QStringLiteral("故障类型"),
-             QStringLiteral("描述"), QStringLiteral("发生时间"), QStringLiteral("操作")},
-            history_tabs);
-        history_tabs->addTab(object_locations_table_, QStringLiteral("物品位置"));
-        history_tabs->addTab(preferences_table_, QStringLiteral("用户记忆"));
-        history_tabs->addTab(device_faults_table_, QStringLiteral("设备故障"));
-        history_layout->addWidget(history_tabs, 1);
-        right_tabs->addTab(history_page, QStringLiteral("历史记忆"));
+        auto* devices_page = new QWidget(right_tabs);
+        auto* devices_layout = new QVBoxLayout(devices_page);
+        auto* devices_hint = new QLabel(
+            QStringLiteral("当前设备来自本地注册表，执行方式均为模拟。"
+                           "后续可将注册来源替换为串口、MQTT 或 Matter 等真实设备发现。"),
+            devices_page);
+        devices_hint->setWordWrap(true);
+        devices_hint->setStyleSheet(QStringLiteral("color: #64748B;"));
+        devices_layout->addWidget(devices_hint);
+        auto* device_buttons = new QHBoxLayout();
+        auto* add_device_button = new QPushButton(QStringLiteral("添加模拟设备"), devices_page);
+        auto* refresh_devices_button = new QPushButton(QStringLiteral("刷新设备"), devices_page);
+        device_buttons->addWidget(add_device_button);
+        device_buttons->addWidget(refresh_devices_button);
+        device_buttons->addStretch();
+        devices_layout->addLayout(device_buttons);
+        devices_table_ = createHistoryTable(
+            {QStringLiteral("设备 ID"), QStringLiteral("房间"), QStringLiteral("设备"),
+             QStringLiteral("支持动作"), QStringLiteral("连接方式"), QStringLiteral("操作")},
+            devices_page);
+        devices_layout->addWidget(devices_table_, 1);
+        right_tabs->addTab(devices_page, QStringLiteral("设备注册表"));
 
         content_layout->addWidget(right_tabs, 2);
         layout->addLayout(content_layout, 1);
@@ -269,11 +259,14 @@ private:
             conversation_view_->appendPlainText(QStringLiteral("—— 已新建会话 ——"));
             statusBar()->showMessage(QStringLiteral("会话已重置"));
         });
-        connect(refresh_history_button, &QPushButton::clicked, this, [this] {
-            refreshHistory();
-            statusBar()->showMessage(QStringLiteral("历史记录已刷新"));
+        connect(refresh_devices_button, &QPushButton::clicked, this, [this] {
+            refreshDevices();
+            statusBar()->showMessage(QStringLiteral("设备注册表已刷新"));
         });
-        refreshHistory();
+        connect(add_device_button, &QPushButton::clicked, this, [this] {
+            addDeviceFromUi();
+        });
+        refreshDevices();
     }
 
     void submitText(const QString& raw_text) {
@@ -385,112 +378,88 @@ private:
         table->setItem(row, column, item);
     }
 
-    static QString userMemoryCategoryText(const std::string& category) {
-        if (category == "USER_PREFERENCE") return QStringLiteral("用户偏好");
-        if (category == "DEVICE_PREFERENCE") return QStringLiteral("设备偏好");
-        if (category == "HABIT") return QStringLiteral("习惯");
-        if (category == "ROUTINE") return QStringLiteral("例程");
-        return QString::fromUtf8(category.c_str());
-    }
+    void addDeviceFromUi() {
+        const QStringList rooms = {
+            QStringLiteral("客厅"), QStringLiteral("卧室"), QStringLiteral("厨房"),
+            QStringLiteral("书房"), QStringLiteral("餐厅"), QStringLiteral("阳台"),
+            QStringLiteral("卫生间"), QStringLiteral("儿童房"), QStringLiteral("玄关")};
+        const QStringList devices = {
+            QStringLiteral("灯"), QStringLiteral("空调"), QStringLiteral("电视"),
+            QStringLiteral("风扇"), QStringLiteral("窗帘"), QStringLiteral("加湿器"),
+            QStringLiteral("空气净化器"), QStringLiteral("扫地机器人"),
+            QStringLiteral("热水器"), QStringLiteral("洗衣机"), QStringLiteral("冰箱"),
+            QStringLiteral("插座"), QStringLiteral("门锁"), QStringLiteral("音箱")};
 
-    void deleteMemoryFromHistory(const assistant::MemoryItem& item) {
-        const QString details = QStringLiteral("%1：%2 = %3")
-                                    .arg(QString::fromUtf8(item.category.c_str()),
-                                         QString::fromUtf8(item.subject.c_str()),
-                                         QString::fromUtf8(item.value.c_str()));
-        if (QMessageBox::question(this, QStringLiteral("删除历史记忆"),
-                                  QStringLiteral("确定删除这条记录吗？\n%1\n\n删除后无法恢复。")
-                                      .arg(details),
-                                  QMessageBox::Yes | QMessageBox::No,
-                                  QMessageBox::No) != QMessageBox::Yes) {
+        bool accepted = false;
+        const QString room = QInputDialog::getItem(
+            this, QStringLiteral("添加模拟设备"), QStringLiteral("所在房间："),
+            rooms, 0, false, &accepted);
+        if (!accepted || room.isEmpty()) return;
+        const QString device = QInputDialog::getItem(
+            this, QStringLiteral("添加模拟设备"), QStringLiteral("设备类型："),
+            devices, 0, false, &accepted);
+        if (!accepted || device.isEmpty()) return;
+
+        std::string device_id;
+        std::string error;
+        if (!runtime_.addDevice(room.toUtf8().constData(), device.toUtf8().constData(),
+                                &device_id, &error)) {
+            QMessageBox::warning(this, QStringLiteral("添加失败"),
+                                 QString::fromUtf8(error.c_str()));
             return;
         }
-        if (!runtime_.deleteMemoryRecord(item)) {
+        refreshDevices();
+        statusBar()->showMessage(
+            QStringLiteral("已添加模拟设备：%1 %2（%3）")
+                .arg(room, device, QString::fromStdString(device_id)),
+            4000);
+    }
+
+    void deleteDeviceFromRegistry(const assistant::RegisteredDevice& item) {
+        if (QMessageBox::question(
+                this, QStringLiteral("删除设备"),
+                QStringLiteral("确定从注册表删除 %1%2 吗？\n删除后相关控制指令将无法解析到该设备。")
+                    .arg(QString::fromUtf8(item.room.c_str()),
+                         QString::fromUtf8(item.device.c_str())),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        if (!runtime_.deleteDevice(item.device_id)) {
             QMessageBox::warning(this, QStringLiteral("删除失败"),
-                                 QStringLiteral("记录可能已被更新或删除，请刷新后重试。"));
-            refreshHistory();
+                                 QStringLiteral("设备可能已被删除，请刷新后重试。"));
+            refreshDevices();
             return;
         }
-        refreshHistory();
-        statusBar()->showMessage(QStringLiteral("已删除历史记忆"), 3000);
+        refreshDevices();
+        statusBar()->showMessage(QStringLiteral("设备已从注册表删除"), 3000);
     }
 
-    void deleteFaultFromHistory(const assistant::DeviceEvent& event) {
-        const QString details = QStringLiteral("%1 %2：%3")
-                                    .arg(QString::fromUtf8(event.room.c_str()),
-                                         QString::fromUtf8(event.device.c_str()),
-                                         QString::fromUtf8(event.description.c_str()));
-        if (QMessageBox::question(this, QStringLiteral("删除设备故障记录"),
-                                  QStringLiteral("确定删除这条故障记录吗？\n%1\n\n删除后无法恢复。")
-                                      .arg(details),
-                                  QMessageBox::Yes | QMessageBox::No,
-                                  QMessageBox::No) != QMessageBox::Yes) {
-            return;
-        }
-        if (!runtime_.deleteDeviceFaultRecord(event)) {
-            QMessageBox::warning(this, QStringLiteral("删除失败"),
-                                 QStringLiteral("记录可能已被更新或删除，请刷新后重试。"));
-            refreshHistory();
-            return;
-        }
-        refreshHistory();
-        statusBar()->showMessage(QStringLiteral("已删除设备故障记录"), 3000);
-    }
-
-    void refreshHistory() {
-        auto memories = runtime_.memorySnapshot();
-        auto events = runtime_.eventSnapshot();
-        std::sort(memories.begin(), memories.end(), [](const auto& left, const auto& right) {
-            return left.updated_at > right.updated_at;
+    void refreshDevices() {
+        auto devices = runtime_.deviceSnapshot();
+        std::sort(devices.begin(), devices.end(), [](const auto& left, const auto& right) {
+            if (left.room != right.room) return left.room < right.room;
+            return left.device < right.device;
         });
-        std::sort(events.begin(), events.end(), [](const auto& left, const auto& right) {
-            return left.timestamp > right.timestamp;
-        });
-
-        object_locations_table_->setRowCount(0);
-        preferences_table_->setRowCount(0);
-        device_faults_table_->setRowCount(0);
-        for (const auto& item : memories) {
-            QTableWidget* table = nullptr;
-            if (item.category == "OBJECT_LOCATION") {
-                table = object_locations_table_;
-            } else if (item.category == "USER_PREFERENCE" ||
-                       item.category == "DEVICE_PREFERENCE" ||
-                       item.category == "HABIT" || item.category == "ROUTINE") {
-                table = preferences_table_;
-            } else {
-                continue;
+        devices_table_->setRowCount(0);
+        for (const auto& item : devices) {
+            const int row = devices_table_->rowCount();
+            devices_table_->insertRow(row);
+            setCell(devices_table_, row, 0, QString::fromUtf8(item.device_id.c_str()));
+            setCell(devices_table_, row, 1, QString::fromUtf8(item.room.c_str()));
+            setCell(devices_table_, row, 2, QString::fromUtf8(item.device.c_str()));
+            QStringList actions;
+            for (const auto& action : item.supported_actions) {
+                actions.push_back(QString::fromUtf8(action.c_str()));
             }
-            const int row = table->rowCount();
-            table->insertRow(row);
-            const bool is_user_memory = table == preferences_table_;
-            const int content_offset = is_user_memory ? 1 : 0;
-            if (is_user_memory) {
-                setCell(table, row, 0, userMemoryCategoryText(item.category));
-            }
-            setCell(table, row, content_offset, QString::fromUtf8(item.subject.c_str()));
-            setCell(table, row, content_offset + 1, QString::fromUtf8(item.attribute.c_str()));
-            setCell(table, row, content_offset + 2, QString::fromUtf8(item.value.c_str()));
-            setCell(table, row, content_offset + 3, unixTimeText(item.updated_at));
-            auto* delete_button = new QPushButton(QStringLiteral("删除"), table);
-            delete_button->setToolTip(QStringLiteral("删除这条历史记忆"));
+            setCell(devices_table_, row, 3, actions.join(QStringLiteral(", ")));
+            setCell(devices_table_, row, 4,
+                    item.transport == "simulation" ? QStringLiteral("本地模拟")
+                                                   : QString::fromUtf8(item.transport.c_str()));
+            auto* delete_button = new QPushButton(QStringLiteral("删除"), devices_table_);
             connect(delete_button, &QPushButton::clicked, this,
-                    [this, item] { deleteMemoryFromHistory(item); });
-            table->setCellWidget(row, content_offset + 4, delete_button);
-        }
-        for (const auto& event : events) {
-            const int row = device_faults_table_->rowCount();
-            device_faults_table_->insertRow(row);
-            setCell(device_faults_table_, row, 0, QString::fromUtf8(event.room.c_str()));
-            setCell(device_faults_table_, row, 1, QString::fromUtf8(event.device.c_str()));
-            setCell(device_faults_table_, row, 2, QString::fromUtf8(event.event_type.c_str()));
-            setCell(device_faults_table_, row, 3, QString::fromUtf8(event.description.c_str()));
-            setCell(device_faults_table_, row, 4, unixTimeText(event.timestamp));
-            auto* delete_button = new QPushButton(QStringLiteral("删除"), device_faults_table_);
-            delete_button->setToolTip(QStringLiteral("删除这条设备故障记录"));
-            connect(delete_button, &QPushButton::clicked, this,
-                    [this, event] { deleteFaultFromHistory(event); });
-            device_faults_table_->setCellWidget(row, 5, delete_button);
+                    [this, item] { deleteDeviceFromRegistry(item); });
+            devices_table_->setCellWidget(row, 5, delete_button);
         }
     }
 
@@ -502,9 +471,7 @@ private:
     QLabel* intent_value_{nullptr};
     QLabel* tool_value_{nullptr};
     QLabel* metrics_value_{nullptr};
-    QTableWidget* object_locations_table_{nullptr};
-    QTableWidget* preferences_table_{nullptr};
-    QTableWidget* device_faults_table_{nullptr};
+    QTableWidget* devices_table_{nullptr};
     QPushButton* send_button_{nullptr};
     BenchmarkCsvWriter benchmark_writer_;
     ActiveTurn active_turn_;

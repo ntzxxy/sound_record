@@ -32,6 +32,14 @@ struct DeviceCommand {
     std::string mode;
 };
 
+struct RegisteredDevice {
+    std::string device_id;
+    std::string room;
+    std::string device;
+    std::vector<std::string> supported_actions;
+    std::string transport{"simulation"};
+};
+
 struct ResolvedDeviceCommand {
     std::string device_id;
     std::string room;
@@ -39,6 +47,7 @@ struct ResolvedDeviceCommand {
     std::string action;
     std::optional<double> value;
     std::string mode;
+    std::vector<std::string> supported_actions;
     bool valid{false};
 };
 

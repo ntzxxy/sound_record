@@ -40,6 +40,10 @@ public:
     void setEventCallback(EventCallback callback);
     std::vector<assistant::MemoryItem> memorySnapshot() const;
     std::vector<assistant::DeviceEvent> eventSnapshot() const;
+    std::vector<assistant::RegisteredDevice> deviceSnapshot() const;
+    bool addDevice(const std::string& room, const std::string& device,
+                   std::string* device_id, std::string* error);
+    bool deleteDevice(const std::string& device_id);
     bool deleteMemoryRecord(const assistant::MemoryItem& item);
     bool deleteDeviceFaultRecord(const assistant::DeviceEvent& event);
 

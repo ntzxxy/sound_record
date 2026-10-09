@@ -31,6 +31,10 @@ public:
                                   const IntentResult& analyzed_intent);
     std::vector<MemoryItem> memorySnapshot() const;
     std::vector<DeviceEvent> eventSnapshot() const;
+    std::vector<RegisteredDevice> deviceSnapshot() const;
+    bool addDevice(const std::string& room, const std::string& device,
+                   std::string* device_id, std::string* error);
+    bool deleteDevice(const std::string& device_id);
     bool deleteMemoryRecord(const MemoryItem& item);
     bool deleteDeviceFaultRecord(const DeviceEvent& event);
 

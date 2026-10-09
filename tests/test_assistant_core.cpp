@@ -53,12 +53,16 @@ using assistant::NormalizedWeatherQuery;
 
 const char* kTestMemoryPath = "/tmp/assistant_core_test_memory_v2.tsv";
 const char* kTestEventPath = "/tmp/assistant_core_test_device_events.tsv";
+const char* kTestDeviceRegistryPath =
+    "/tmp/assistant_core_test_memory_v2_devices.tsv";
 
 void resetTestFile() {
     std::remove(kTestMemoryPath);
     std::remove("/tmp/assistant_core_test_memory_v2.tsv.tmp");
     std::remove(kTestEventPath);
     std::remove("/tmp/assistant_core_test_device_events.tsv.tmp");
+    std::remove(kTestDeviceRegistryPath);
+    std::remove("/tmp/assistant_core_test_memory_v2_devices.tsv.tmp");
 }
 
 MemoryItem makeItem(const std::string& category,
@@ -421,6 +425,64 @@ int main() {
         std::string error;
         CHECK(validator.validate(*resolved, &error));
         CHECK(resolved->mode == "COOL");
+    }
+
+    {
+        const char* registry_path = "/tmp/assistant_core_registry_crud.tsv";
+        std::remove(registry_path);
+        std::remove("/tmp/assistant_core_registry_crud.tsv.tmp");
+        DeviceRegistry registry(registry_path);
+        CHECK(registry.load());
+        CHECK(registry.snapshot().size() == 4);
+
+        std::string device_id;
+        std::string error;
+        CHECK(registry.add("客厅", "电视", &device_id, &error));
+        CHECK(!device_id.empty());
+        CHECK(registry.snapshot().size() == 5);
+        CHECK(!registry.add("客厅", "电视", nullptr, &error));
+
+        assistant::DeviceCommand command = makeCommand("客厅", "电视", "TURN_ON");
+        const auto resolved = registry.resolve(command);
+        CHECK(resolved);
+        CHECK(resolved->device_id == device_id);
+        DeviceCommandValidator validator;
+        CHECK(validator.validate(*resolved, &error));
+        command.action = "SET_TEMPERATURE";
+        command.value = 24.0;
+        const auto unsupported = registry.resolve(command);
+        CHECK(unsupported);
+        CHECK(!validator.validate(*unsupported, &error));
+        CHECK(error == "unsupported_action");
+
+        CHECK(registry.remove(device_id));
+        CHECK(!registry.resolve(command));
+        DeviceRegistry reloaded(registry_path);
+        CHECK(reloaded.load());
+        CHECK(!reloaded.resolve(command));
+        std::remove(registry_path);
+        std::remove("/tmp/assistant_core_registry_crud.tsv.tmp");
+    }
+
+    {
+        resetTestFile();
+        AssistantService service(kTestMemoryPath, kTestEventPath, makeTestSemanticRouter());
+        CHECK(service.initialize());
+        std::string device_id;
+        std::string error;
+        CHECK(service.addDevice("客厅", "电视", &device_id, &error));
+
+        ServiceResult opened = service.process("打开客厅电视");
+        CHECK(opened.task_type == IntentType::DeviceControl);
+        CHECK(opened.device_command);
+        CHECK(opened.device_command->device_id == device_id);
+
+        CHECK(service.deleteDevice(device_id));
+        ServiceResult removed = service.process("打开客厅电视");
+        CHECK(removed.task_type == IntentType::DeviceControl);
+        CHECK(!removed.device_command);
+        CHECK(removed.fixed_reply.find("当前没有找到客厅电视") != std::string::npos);
+        resetTestFile();
     }
 
     {

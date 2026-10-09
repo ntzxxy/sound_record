@@ -1,5 +1,7 @@
 #include "validators.h"
 
+#include <algorithm>
+
 namespace assistant {
 
 bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std::string* error) const {
@@ -11,16 +13,16 @@ bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std:
         if (error) *error = "missing_device_slot";
         return false;
     }
-    if (command.action != "TURN_ON" && command.action != "TURN_OFF" &&
-        command.action != "SET_TEMPERATURE" && command.action != "SET_MODE") {
-        if (error) *error = "unsupported_action";
-        return false;
-    }
     const bool is_light = command.device == "灯" ||
                           command.device_id == "bedroom_light" ||
                           command.device_id == "living_room_light";
     if (is_light && command.action == "SET_TEMPERATURE") {
         if (error) *error = "light_temperature_unsupported";
+        return false;
+    }
+    if (std::find(command.supported_actions.begin(), command.supported_actions.end(),
+                  command.action) == command.supported_actions.end()) {
+        if (error) *error = "unsupported_action";
         return false;
     }
     if (command.action == "SET_MODE") {

@@ -569,6 +569,13 @@ std::string defaultEventLogPath(const std::string& memory_path) {
     return (dir / "device_fault_events.tsv").string();
 }
 
+std::string defaultDeviceRegistryPath(const std::string& memory_path) {
+    const std::filesystem::path path(memory_path);
+    const std::filesystem::path dir = path.parent_path();
+    if (dir.empty()) return "./runtime/device_registry.tsv";
+    return (dir / (path.stem().string() + "_devices.tsv")).string();
+}
+
 std::string makeDeviceFaultContext(const DeviceEvent& event) {
     return "【设备异常记录】\n"
            "- 已记录用户反馈的设备异常："
@@ -649,19 +656,22 @@ AssistantService::AssistantService(const std::string& memory_path,
                                    const std::string& event_log_path,
                                    std::shared_ptr<const SemanticIntentRouter> semantic_router)
     : request_router_(std::move(semantic_router)),
+      device_registry_(defaultDeviceRegistryPath(memory_path)),
       memory_store_(memory_path),
       event_log_(event_log_path.empty() ? defaultEventLogPath(memory_path) : event_log_path) {}
 
 bool AssistantService::initialize() {
     const bool memory_ok = memory_store_.load();
     const bool event_ok = event_log_.load();
+    const bool devices_ok = device_registry_.load();
     const bool intent_ok = intent_preprocessor_.initialize();
     std::cout << kLogPrefix << " initialize memory_load="
               << (memory_ok ? "OK" : "FAIL")
               << " event_log_load=" << (event_ok ? "OK" : "FAIL")
+              << " device_registry_load=" << (devices_ok ? "OK" : "FAIL")
               << " intent_preprocessor=" << (intent_ok ? "OK" : "FAIL")
               << std::endl;
-    return memory_ok && event_ok && intent_ok;
+    return memory_ok && event_ok && devices_ok && intent_ok;
 }
 
 ServiceResult AssistantService::process(const std::string& user_input) {
@@ -1194,6 +1204,19 @@ std::vector<MemoryItem> AssistantService::memorySnapshot() const {
 
 std::vector<DeviceEvent> AssistantService::eventSnapshot() const {
     return event_log_.snapshot();
+}
+
+std::vector<RegisteredDevice> AssistantService::deviceSnapshot() const {
+    return device_registry_.snapshot();
+}
+
+bool AssistantService::addDevice(const std::string& room, const std::string& device,
+                                 std::string* device_id, std::string* error) {
+    return device_registry_.add(room, device, device_id, error);
+}
+
+bool AssistantService::deleteDevice(const std::string& device_id) {
+    return device_registry_.remove(device_id);
 }
 
 bool AssistantService::deleteMemoryRecord(const MemoryItem& item) {

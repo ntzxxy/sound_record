@@ -96,6 +96,21 @@ std::vector<assistant::DeviceEvent> ConversationRuntime::eventSnapshot() const {
                               : std::vector<assistant::DeviceEvent>{};
 }
 
+std::vector<assistant::RegisteredDevice> ConversationRuntime::deviceSnapshot() const {
+    return assistant_service_ ? assistant_service_->deviceSnapshot()
+                              : std::vector<assistant::RegisteredDevice>{};
+}
+
+bool ConversationRuntime::addDevice(const std::string& room, const std::string& device,
+                                    std::string* device_id, std::string* error) {
+    return assistant_service_ &&
+           assistant_service_->addDevice(room, device, device_id, error);
+}
+
+bool ConversationRuntime::deleteDevice(const std::string& device_id) {
+    return assistant_service_ && assistant_service_->deleteDevice(device_id);
+}
+
 bool ConversationRuntime::deleteMemoryRecord(const assistant::MemoryItem& item) {
     return assistant_service_ && assistant_service_->deleteMemoryRecord(item);
 }
