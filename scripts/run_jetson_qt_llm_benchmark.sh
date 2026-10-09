@@ -17,6 +17,7 @@ benchmark_root=${3:-"$project_root/runtime/benchmarks"}
 
 [[ $binary = /* ]] || binary="$PWD/$binary"
 [[ $model = /* ]] || model="$PWD/$model"
+build_root=$(dirname "$(dirname "$binary")")
 
 if [[ ! -x $binary ]]; then
     echo "Qt HMI binary is not executable: $binary" >&2
@@ -34,6 +35,8 @@ xdg_runtime_dir="$project_root/runtime/xdg"
 mkdir -p "$session_dir/raw" "$runtime_dir" "$xdg_runtime_dir"
 source "$script_dir/jetson_qt_hmi_env.sh"
 prepare_jetson_qt_hmi_env "$xdg_runtime_dir"
+prepare_semantic_router_env "$project_root" "$build_root"
+verify_semantic_router_linkage "$binary"
 
 cache_file="$(dirname "$(dirname "$binary")")/CMakeCache.txt"
 {
@@ -46,6 +49,7 @@ cache_file="$(dirname "$(dirname "$binary")")/CMakeCache.txt"
     echo "xauthority=$XAUTHORITY"
     echo "dbus_session_bus_address=$DBUS_SESSION_BUS_ADDRESS"
     echo "qt_im_module=$QT_IM_MODULE"
+    echo "semantic_router_model_dir=$SOUND_RECORD_SEMANTIC_ROUTER_MODEL_DIR"
     echo "cuda_home=$CUDA_HOME"
     echo "nvcc=$(command -v nvcc || true)"
     nvcc -V 2>&1 || true

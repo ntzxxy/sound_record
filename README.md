@@ -201,11 +201,10 @@ cmake -S . -B build-tests \
   -DBUILD_ASSISTANT_RUNTIME=ON -DBUILD_BOARD_CLIENT=OFF \
   -DBUILD_DESKTOP_CLIENT=OFF
 cmake --build build-tests --target \
-  test_assistant_core test_chat_agent test_local_voice_pipeline -j
+  test_assistant_core test_chat_agent test_local_voice_pipeline \
+  test_conversation_runtime test_control_gateway -j
 
-./build-tests/bin/test_assistant_core
-./build-tests/bin/test_chat_agent
-./build-tests/bin/test_local_voice_pipeline
+ctest --test-dir build-tests --output-on-failure
 ```
 
 ## 目录概览

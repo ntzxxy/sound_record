@@ -15,6 +15,7 @@ binary=${QT_HMI_BINARY:-"$project_root/build-jetson-qt-gpu/bin/qt_hmi"}
 model=${QT_HMI_MODEL:-"$project_root/models/gemma-4-E4B-it-Q4_0.gguf"}
 state_dir=${QT_HMI_STATE_DIR:-"$project_root/runtime/qt_hmi"}
 xdg_runtime_dir=${QT_HMI_XDG_RUNTIME_DIR:-"$project_root/runtime/xdg"}
+build_root=$(dirname "$(dirname "$binary")")
 
 if [[ ! -x $binary ]]; then
     echo "[run_jetson_qt_hmi] Executable not found: $binary" >&2
@@ -28,6 +29,8 @@ fi
 
 source "$script_dir/jetson_qt_hmi_env.sh"
 prepare_jetson_qt_hmi_env "$xdg_runtime_dir"
+prepare_semantic_router_env "$project_root" "$build_root"
+verify_semantic_router_linkage "$binary"
 mkdir -p "$state_dir"
 
 echo "[run_jetson_qt_hmi] DISPLAY=$DISPLAY, Qt IM=$QT_IM_MODULE, CUDA_HOME=$CUDA_HOME"

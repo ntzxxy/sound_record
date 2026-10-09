@@ -10,6 +10,8 @@ target_link_libraries(test_local_voice_pipeline PRIVATE cockpit_pipeline pthread
 target_compile_features(test_local_voice_pipeline PRIVATE cxx_std_17)
 target_compile_options(test_local_voice_pipeline PRIVATE -Wall -Wextra -Wpedantic)
 
+add_test(NAME local_voice_pipeline COMMAND test_local_voice_pipeline)
+
 add_executable(test_assistant_core
     test_assistant_core.cpp
     llm_stub.cpp
@@ -24,6 +26,8 @@ target_compile_options(test_assistant_core PRIVATE
     -Wextra
     -Wpedantic
 )
+
+add_test(NAME assistant_core COMMAND test_assistant_core)
 
 add_executable(test_conversation_runtime
     test_conversation_runtime.cpp
@@ -40,6 +44,8 @@ target_compile_options(test_conversation_runtime PRIVATE
     -Wextra
     -Wpedantic
 )
+
+add_test(NAME conversation_runtime COMMAND test_conversation_runtime)
 
 add_executable(test_chat_agent
     test_chat_agent.cpp
@@ -58,6 +64,8 @@ target_compile_options(test_chat_agent PRIVATE
     -Wextra
     -Wpedantic
 )
+
+add_test(NAME chat_agent COMMAND test_chat_agent)
 
 add_executable(test_control_gateway
     test_control_gateway.cpp
@@ -79,3 +87,5 @@ target_compile_options(test_control_gateway PRIVATE
     -Wextra
     -Wpedantic
 )
+
+add_test(NAME control_gateway COMMAND test_control_gateway)

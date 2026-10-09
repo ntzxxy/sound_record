@@ -184,31 +184,40 @@ int main() {
 
     if (std::getenv("SOUND_RECORD_SEMANTIC_ROUTER_MODEL_DIR")) {
         const auto runtime_router = assistant::createSemanticIntentRouterFromEnvironment();
-        const auto control = runtime_router->classify("把空调调到26度");
-        const auto preference = runtime_router->classify("我喜欢空调26度");
-        const auto fault = runtime_router->classify("空调为什么不制冷");
-        const auto weather = runtime_router->classify("今天上海天气怎么样");
+        // The temporary public package only contains these two prototype
+        // routes.  Project-specific memory/fault behavior must not be inferred
+        // from this probe.
+        const auto control = runtime_router->classify("调暗一点灯");
+        const auto weather = runtime_router->classify("明天的天气预测怎么样");
         const auto none = runtime_router->classify("暖光有什么优点");
         std::cerr << "[SemanticRouterProbe] control=" << assistant::toString(control.route)
                   << ':' << control.top1_score << '/' << control.margin
-                  << " preference=" << assistant::toString(preference.route)
-                  << ':' << preference.top1_score << '/' << preference.margin
-                  << " fault=" << assistant::toString(fault.route)
-                  << ':' << fault.top1_score << '/' << fault.margin
+                  << '/' << control.latency_ms << "ms"
                   << " weather=" << assistant::toString(weather.route)
                   << ':' << weather.top1_score << '/' << weather.margin
+                  << '/' << weather.latency_ms << "ms"
                   << " none=" << assistant::toString(none.route)
-                  << ':' << none.top1_score << '/' << none.margin << std::endl;
+                  << ':' << none.top1_score << '/' << none.margin
+                  << '/' << none.latency_ms << "ms" << std::endl;
         CHECK(control.available);
         CHECK(control.route == SemanticRoute::DeviceControl);
-        CHECK(preference.route == SemanticRoute::MemoryWrite);
-        CHECK(fault.route == SemanticRoute::DeviceFault);
         CHECK(weather.route == SemanticRoute::WeatherQuery);
         CHECK(none.route == SemanticRoute::None);
         CHECK(control.top1_score >= control.top2_score);
         CHECK(control.margin == control.top1_score - control.top2_score);
         CHECK(!control.matched_example.empty());
         CHECK(control.latency_ms > 0.0);
+
+        // The local grammar remains authoritative for supported commands even
+        // when the public embedding package rejects a project-specific phrase.
+        RequestRouter router(runtime_router);
+        const auto project_control = router.analyze("把空调调到26度");
+        CHECK(project_control.status == LocalRouteStatus::FastPath);
+        CHECK(project_control.intent.intent == IntentType::DeviceControl);
+        CHECK(project_control.intent.device_command);
+        CHECK(project_control.intent.device_command->device == "空调");
+        CHECK(project_control.intent.device_command->action == "SET_TEMPERATURE");
+        CHECK(project_control.intent.device_command->value == 26);
     }
 
     {

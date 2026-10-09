@@ -8,97 +8,70 @@
 namespace assistant {
 namespace {
 
-const char kIntentSystemPrompt[] =
-    "你是家庭智能终端的语义预分类器。只输出一个JSON对象，不要解释，不要markdown。\n"
-    "任务类型只能是 GENERAL_CHAT, DEVICE_CONTROL, DEVICE_FAULT, MEMORY_WRITE, MEMORY_QUERY, MEMORY_DELETE, WEATHER_QUERY, CLARIFY。\n"
-    "普通聊天、情绪表达、知识问答属于 GENERAL_CHAT；提到设备不等于控制。\n"
-    "明确控制设备且房间、设备、动作完整时才是 DEVICE_CONTROL。只有用户存在明确设备操作意图，但缺少执行所必需的信息时，才是 CLARIFY\n"
-    "用户反馈设备异常、故障、无法工作、噪音、漏水、不制冷等，属于 DEVICE_FAULT；DEVICE_FAULT 不是设备控制，不要求房间必须明确。\n"
-    "你不能输出内部device_id，只能输出room, device, action, value。\n"
-    "记忆只保存可长期复用的用户偏好、习惯、设备偏好或物品位置，不得虚构。\n"
-    "命令式表达如打开、关闭、设置、调到、设为，只有确实要求执行设备操作时才按DEVICE_CONTROL处理；明确请求记住的内容优先按MEMORY_WRITE处理。\n"
-    "MEMORY_WRITE可保存用户明确要求记住的内容；也可保存文本中明确陈述的、长期稳定的用户偏好、习惯或物品位置。"
-    "不得把临时情绪、一次性计划、泛化知识或你的推测写入记忆。\n"
-    "删除、清除、忘掉、不要记住是MEMORY_DELETE，不能写成MEMORY_WRITE。\n"
-    "询问某地天气、气温、降雨、风力、天气预报或历史天气时必须是WEATHER_QUERY。\n"
-    "WEATHER_QUERY只提取用户明确说出的city、start_date、end_date、days；日期格式必须为YYYY-MM-DD，未说日期时填空字符串，days未知时填0。不要自行计算今天日期。\n"
-    "JSON格式固定为：{\"intent\":\"...\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"weather_query\":null,\"missing_slots\":[],\"clarification_question\":\"\",\"reply\":\"\"}\n"
-    "reply是可选的、给用户看的简短自然回答，最长50个汉字；MEMORY_WRITE或无法形成可靠业务操作但可安全回答的GENERAL_CHAT均可填写。reply不得声称执行过未验证的设备操作。\n"
-    "device_command={\"room\":\"\",\"device\":\"\",\"action\":\"TURN_ON|TURN_OFF|SET_TEMPERATURE\",\"value\":null}\n"
-    "CLARIFY如果是设备控制信息不完整，必须保留已知device_command槽位，并在missing_slots中输出缺失字段：room, device, action, value。\n"
-    "device_event={\"room\":\"\",\"device\":\"\",\"event_type\":\"FAULT\",\"description\":\"\"}\n"
-    "memory={\"category\":\"USER_PREFERENCE|DEVICE_PREFERENCE|HABIT|ROUTINE|OBJECT_LOCATION\",\"subject\":\"\",\"attribute\":\"\",\"value\":\"\",\"condition\":\"\",\"context\":\"\",\"time\":\"\",\"scope\":\"\",\"confidence\":100}\n"
-    "condition表示成立条件如阅读时、睡觉时；time只填明确时间如晚上十一点；scope填房间或适用范围。没有则填空字符串。confidence是0到100，只对原文明确且稳定的信息给80以上。\n"
-    "memory_query={\"subject\":\"\",\"attribute\":\"\",\"condition\":\"\",\"scope\":\"\"}\n"
-    "memory_delete={\"category\":\"USER_PREFERENCE|OBJECT_LOCATION|\",\"subject\":\"\",\"delete_all\":false}\n"
-    "weather_query={\"city\":\"\",\"start_date\":\"\",\"end_date\":\"\",\"days\":0}\n"
-    "示例：\n"
-    "用户: 今天心情不错\n"
-    "输出: {\"intent\":\"GENERAL_CHAT\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"weather_query\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 今天新加坡天气怎样\n"
-    "输出: {\"intent\":\"WEATHER_QUERY\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"weather_query\":{\"city\":\"新加坡\",\"start_date\":\"\",\"end_date\":\"\",\"days\":0},\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 查询北京2026年8月1日到2026年8月3日的天气\n"
-    "输出: {\"intent\":\"WEATHER_QUERY\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"weather_query\":{\"city\":\"北京\",\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-03\",\"days\":3},\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 空调怎么好像不工作了\n"
-    "输出: {\"intent\":\"DEVICE_FAULT\",\"device_command\":null,\"device_event\":{\"room\":\"\",\"device\":\"空调\",\"event_type\":\"FAULT\",\"description\":\"好像不工作了\"},\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 屋里有点热\n"
-    "输出: {\"intent\":\"GENERAL_CHAT\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 麻烦打开卧室空调\n"
-    "输出: {\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"卧室\",\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 把客厅空调设置到26度\n"
-    "输出: {\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"客厅\",\"device\":\"空调\",\"action\":\"SET_TEMPERATURE\",\"value\":26},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 将卧室灯设置为26度\n"
-    "输出: {\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"卧室\",\"device\":\"灯\",\"action\":\"SET_TEMPERATURE\",\"value\":26},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 我喜欢空调设置在26度\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"空调温度\",\"attribute\":\"偏好\",\"value\":\"26度\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 我睡觉时不喜欢开主灯\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"睡眠照明\",\"attribute\":\"偏好\",\"value\":\"不开主灯\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 雨伞放在玄关柜下面\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"OBJECT_LOCATION\",\"subject\":\"雨伞\",\"attribute\":\"位置\",\"value\":\"玄关柜下面\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 我的雨伞在哪里\n"
-    "输出: {\"intent\":\"MEMORY_QUERY\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":{\"subject\":\"雨伞\",\"attribute\":\"位置\"},\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 忘掉雨伞的位置\n"
-    "输出: {\"intent\":\"MEMORY_DELETE\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":{\"category\":\"OBJECT_LOCATION\",\"subject\":\"雨伞\",\"delete_all\":false},\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 帮我把空调打开\n"
-    "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\",\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"room\"],\"clarification_question\":\"请问要打开哪个房间的空调？\"}\n"
-    "用户: 我通常在晚上十一点阅读半小时\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"HABIT\",\"subject\":\"阅读\",\"attribute\":\"时长\",\"value\":\"半小时\",\"condition\":\"\",\"context\":\"阅读习惯\",\"time\":\"晚上十一点\",\"scope\":\"\",\"confidence\":95},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\",\"reply\":\"好的，我记住你的阅读习惯了。\"}\n"
-    "用户: 阅读灯位置在书桌旁\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"OBJECT_LOCATION\",\"subject\":\"阅读灯\",\"attribute\":\"位置\",\"value\":\"书桌旁\"},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 我喜欢什么样的灯光\n"
-    "输出: {\"intent\":\"MEMORY_QUERY\",\"device_command\":null,\"device_event\":null,\"memory\":null,\"memory_query\":{\"subject\":\"灯光\",\"attribute\":\"偏好\"},\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 阅读时我不喜欢太刺眼的光\n"
-    "输出: {\"intent\":\"MEMORY_WRITE\",\"device_command\":null,\"device_event\":null,\"memory\":{\"category\":\"USER_PREFERENCE\",\"subject\":\"灯光\",\"attribute\":\"偏好\",\"value\":\"不喜欢太刺眼\",\"condition\":\"阅读时\",\"context\":\"阅读环境\",\"time\":\"\",\"scope\":\"\",\"confidence\":95},\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[],\"clarification_question\":\"\"}\n"
-    "用户: 帮我打开卧室的\n"
-    "输出: {\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"卧室\",\"device\":\"\",\"action\":\"TURN_ON\",\"value\":null},\"device_event\":null,\"memory\":null,\"memory_query\":null,\"memory_delete\":null,\"missing_slots\":[\"device\"],\"clarification_question\":\"请问要打开卧室的哪个设备？\"}";
+// 粗粒度路由已经在 RequestRouter 中完成。这里的模型只负责校验候选并抽取
+// 对应字段，不再重复八分类。GENERAL_CHAT 是防止粗路由误命中业务的安全拒绝。
+const char kSafeRejectPrompt[] =
+    "你是JSON抽取器。没有提供可靠的业务候选，不要分类或猜测。"
+    "只输出{\"intent\":\"GENERAL_CHAT\",\"reply\":\"\"}，不要解释或markdown。";
 
-// 明确的记忆写入使用精简提示词，减少无关业务说明带来的预填充和生成开销。
+const char kDeviceControlPrompt[] =
+    "前级候选为设备控制。你只校验并抽取字段，不要在业务类型之间分类。只输出JSON。\n"
+    "明确要求执行设备操作时输出{\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"TURN_ON|TURN_OFF|SET_TEMPERATURE\",\"value\":null}}。"
+    "action只能取以上三个值，只填原文信息，不能输出device_id；温度value为数字。"
+    "灯光颜色、亮度、模式等当前未支持的动作不得改写成温度设置，应输出GENERAL_CHAT并说明暂不支持。\n"
+    "控制意图明确但缺必需字段时输出{\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"\",\"value\":null},\"missing_slots\":[\"字段名\"],\"clarification_question\":\"一个简短问题\"}。\n"
+    "若只是描述、询问方法、否定执行或并非控制请求，输出{\"intent\":\"GENERAL_CHAT\",\"reply\":\"简短安全回答\"}。不得声称设备已经执行。";
+
+const char kDeviceFaultPrompt[] =
+    "前级候选为设备故障。你只校验并抽取字段，不要在业务类型之间分类。只输出JSON。\n"
+    "用户在反馈真实设备异常时输出{\"intent\":\"DEVICE_FAULT\",\"device_event\":{\"room\":\"\",\"device\":\"\",\"event_type\":\"FAULT\",\"description\":\"\"}}，字段只能来自原文，room可空。\n"
+    "缺少设备时输出{\"intent\":\"CLARIFY\",\"clarification_question\":\"请说明哪个设备出现了问题。\"}；知识问答或非故障反馈输出{\"intent\":\"GENERAL_CHAT\",\"reply\":\"\"}。";
+
+// 明确的记忆写入使用独立提示词，减少无关业务说明带来的预填充和生成开销。
 const char kExplicitMemoryWritePrompt[] =
-    "用户已明确要求保存长期记忆。只输出一个JSON对象，不要解释、不要markdown。\n"
+    "前级候选为记忆写入。你只抽取字段，不要在业务类型之间分类。只输出JSON。\n"
     "有完整事实时只能输出：{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"USER_PREFERENCE|DEVICE_PREFERENCE|HABIT|ROUTINE|OBJECT_LOCATION\",\"subject\":\"\",\"attribute\":\"\",\"value\":\"\"}}。\n"
     "只记录用户原话中明确给出的事实，不能猜测或补充。睡眠、作息等稳定习惯用HABIT；物品所在位置用OBJECT_LOCATION；一般喜好用USER_PREFERENCE。\n"
-    "缺少可保存的具体内容时输出：{\"intent\":\"CLARIFY\",\"clarification_question\":\"请说明要记住的具体内容。\"}。\n"
-    "用户：请记住，我晚上十点睡觉\n"
-    "输出：{\"intent\":\"MEMORY_WRITE\",\"memory\":{\"category\":\"HABIT\",\"subject\":\"睡眠\",\"attribute\":\"时间\",\"value\":\"晚上十点\"}}";
+    "缺少可保存的具体内容时输出：{\"intent\":\"CLARIFY\",\"clarification_question\":\"请说明要记住的具体内容。\"}。";
+
+const char kMemoryQueryPrompt[] =
+    "前级候选为记忆查询。你只抽取检索字段，不要在业务类型之间分类。只输出JSON。\n"
+    "输出{\"intent\":\"MEMORY_QUERY\",\"memory_query\":{\"subject\":\"\",\"attribute\":\"\",\"condition\":\"\",\"scope\":\"\"}}，只填原文信息。"
+    "无法确定要查询什么时输出{\"intent\":\"CLARIFY\",\"clarification_question\":\"请说明你想查询哪条记忆。\"}。";
+
+const char kRecordQueryPrompt[] =
+    "前级候选为历史记录查询。你只抽取记录类型，不要在业务类型之间分类。只输出JSON。\n"
+    "输出{\"intent\":\"RECORD_QUERY\",\"record_query\":{\"type\":\"ALL|DEVICE_FAULT|USER_PREFERENCE|OBJECT_LOCATION\"}}。"
+    "无法确定查询范围时type填ALL。";
+
+const char kWeatherQueryPrompt[] =
+    "前级候选为天气查询。你只抽取字段，不要在业务类型之间分类。只输出JSON。\n"
+    "输出{\"intent\":\"WEATHER_QUERY\",\"weather_query\":{\"city\":\"\",\"start_date\":\"\",\"end_date\":\"\",\"days\":0}}。"
+    "只填原文明确给出的地点和日期；日期格式YYYY-MM-DD，未给出日期则留空，不要自行计算今天。"
+    "缺少地点时输出{\"intent\":\"CLARIFY\",\"clarification_question\":\"请告诉我需要查询天气的地点。\"}。";
 
 std::string makeSystemPrompt(const std::string& semantic_hint) {
-    if (semantic_hint == "explicit_memory_write") return kExplicitMemoryWritePrompt;
-    if (semantic_hint.empty()) return kIntentSystemPrompt;
-
-    std::string prompt{kIntentSystemPrompt};
-    prompt += "\n本地候选提示（仅用于决定是否抽取，不能当成事实，也不能据此猜测）：";
-    if (semantic_hint == "device_fault_report") {
-        prompt += "这句话可能是设备故障反馈。仅在原文存在故障症状时输出DEVICE_FAULT，绝不把它当成设备控制。";
-    } else if (semantic_hint == "complex_device_control" || semantic_hint == "device_control") {
-        prompt += "这可能是复杂设备控制，但本地不支持直接执行。只有能抽取为受支持的完整DEVICE_CONTROL时才输出该类型；否则输出GENERAL_CHAT并在reply中给出安全答复，绝不虚构执行结果。";
-    } else if (semantic_hint == "memory_query") {
-        prompt += "这句话属于记忆查询。只从原文抽取MEMORY_QUERY字段，不能改写成记忆写入或设备控制。";
-    } else if (semantic_hint == "record_query") {
-        prompt += "这句话属于历史记录查询。只抽取RECORD_QUERY，不得创建新记录或执行设备。";
-    } else if (semantic_hint == "weather_query") {
-        prompt += "这句话属于天气查询。只抽取WEATHER_QUERY中原文明确给出的城市和日期。";
+    if (semantic_hint == "device_control" || semantic_hint == "complex_device_control") {
+        return kDeviceControlPrompt;
     }
-    return prompt;
+    if (semantic_hint == "device_fault_report") return kDeviceFaultPrompt;
+    if (semantic_hint == "explicit_memory_write") return kExplicitMemoryWritePrompt;
+    if (semantic_hint == "memory_query") return kMemoryQueryPrompt;
+    if (semantic_hint == "record_query") return kRecordQueryPrompt;
+    if (semantic_hint == "weather_query") return kWeatherQueryPrompt;
+    return kSafeRejectPrompt;
+}
+
+int maxTokensForHint(const std::string& semantic_hint) {
+    if (semantic_hint == "record_query") return 48;
+    if (semantic_hint == "memory_query") return 80;
+    if (semantic_hint == "weather_query") return 96;
+    if (semantic_hint == "explicit_memory_write") return 96;
+    if (semantic_hint == "device_control" || semantic_hint == "complex_device_control" ||
+        semantic_hint == "device_fault_report") {
+        return 112;
+    }
+    return 48;
 }
 
 }  // namespace
@@ -118,11 +91,13 @@ IntentResult IntentPreprocessor::analyze(const std::string& user_input,
 
     char output[4096];
     llm_once_params_t params;
-    // 专用提示只输出意图和三个必填字段，96 token 足以容纳中文值并限制异常续写。
-    params.max_tokens = semantic_hint == "explicit_memory_write" ? 96 : 192;
+    params.max_tokens = maxTokensForHint(semantic_hint);
     params.temperature = 0.0f;
     int latency_ms = 0;
     const std::string system_prompt = makeSystemPrompt(semantic_hint);
+    std::cout << "[IntentPrompt] hint=" << semantic_hint
+              << " bytes=" << system_prompt.size()
+              << " max_tokens=" << params.max_tokens << std::endl;
     const int ret = llm_generate_once(system_prompt.c_str(), user_input.c_str(),
                                       &params, output, sizeof(output), &latency_ms);
     result.intent_latency_ms = latency_ms;

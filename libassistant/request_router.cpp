@@ -419,6 +419,25 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
         return fastResult(std::move(intent), "execution_suppressed");
     }
 
+    // A complete or safely partial command in the supported local grammar is
+    // already stronger evidence than an embedding score.  Resolve it before
+    // semantic routing so a conservative/OOD threshold cannot hide commands
+    // that the deterministic parser and validator know how to handle.  Bulk
+    // and unsupported forms still continue to the semantic fallback path.
+    if (!hasExplicitMemoryWrite(input) && !isAmbiguousBulkControl(input)) {
+        const LocalDeviceControlMatch match = matchLocalDeviceControl(input);
+        if (match.status == DeviceCommandMatch::FullMatch ||
+            match.status == DeviceCommandMatch::PartialMatch) {
+            IntentResult intent;
+            intent.intent = IntentType::DeviceControl;
+            intent.device_command = match.command;
+            return fastResult(std::move(intent),
+                              match.status == DeviceCommandMatch::FullMatch
+                                  ? "device_control_full_match"
+                                  : "device_control_partial_match");
+        }
+    }
+
     const SemanticRouteResult route = semantic_router_
                                           ? semantic_router_->classify(input)
                                           : SemanticRouteResult{};
@@ -442,19 +461,6 @@ RequestAnalysis RequestRouter::analyze(const std::string& input) const {
             }
             if (isAmbiguousBulkControl(input)) {
                 return semanticFallback(route, "device_control_complex", "device_control");
-            }
-            const LocalDeviceControlMatch match = matchLocalDeviceControl(input);
-            if (match.status == DeviceCommandMatch::FullMatch ||
-                match.status == DeviceCommandMatch::PartialMatch) {
-                IntentResult intent;
-                intent.intent = IntentType::DeviceControl;
-                intent.device_command = match.command;
-                RequestAnalysis result = fastResult(
-                    std::move(intent), match.status == DeviceCommandMatch::FullMatch
-                                           ? "device_control_full_match"
-                                           : "device_control_partial_match");
-                result.semantic_route = route;
-                return result;
             }
             return semanticFallback(route, "device_control_parser_fallback", "device_control");
         }

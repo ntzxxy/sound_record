@@ -5,6 +5,7 @@ docs/
 !/docs/
 docs/*
 !docs/JETSON_ORIN_NX_DEPLOYMENT.md
+!docs/MINIMUM_DEMO_ACCEPTANCE.md
 PPT/
 *.docx
 *.gguf
