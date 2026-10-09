@@ -16,10 +16,10 @@ const char kSafeRejectPrompt[] =
 
 const char kDeviceControlPrompt[] =
     "前级候选为设备控制。你只校验并抽取字段，不要在业务类型之间分类。只输出JSON。\n"
-    "明确要求执行设备操作时输出{\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"TURN_ON|TURN_OFF|SET_TEMPERATURE\",\"value\":null}}。"
-    "action只能取以上三个值，只填原文信息，不能输出device_id；温度value为数字。"
-    "灯光颜色、亮度、模式等当前未支持的动作不得改写成温度设置，应输出GENERAL_CHAT并说明暂不支持。\n"
-    "控制意图明确但缺必需字段时输出{\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"\",\"value\":null},\"missing_slots\":[\"字段名\"],\"clarification_question\":\"一个简短问题\"}。\n"
+    "明确要求执行设备操作时输出{\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"TURN_ON|TURN_OFF|SET_TEMPERATURE|SET_MODE\",\"value\":null,\"mode\":\"\"}}。"
+    "空调制冷/制热/除湿/送风用SET_MODE，mode分别填COOL/HEAT/DRY/FAN；同句温度填数字value。只填原文信息，不能输出device_id。"
+    "灯光颜色、亮度等未支持动作不得改写成温度设置，应输出GENERAL_CHAT并说明暂不支持。\n"
+    "控制意图明确但缺必需字段时输出{\"intent\":\"CLARIFY\",\"device_command\":{\"room\":\"\",\"device\":\"\",\"action\":\"\",\"value\":null,\"mode\":\"\"},\"missing_slots\":[\"字段名\"],\"clarification_question\":\"一个简短问题\"}。\n"
     "若只是描述、询问方法、否定执行或并非控制请求，输出{\"intent\":\"GENERAL_CHAT\",\"reply\":\"简短安全回答\"}。不得声称设备已经执行。";
 
 const char kDeviceFaultPrompt[] =

@@ -27,6 +27,9 @@ struct DeviceCommand {
     std::string device;
     std::string action;
     std::optional<double> value;
+    // 空调运行模式。仅在 action=SET_MODE 时使用。
+    // 取值由校验器限制为 COOL/HEAT/DRY/FAN。
+    std::string mode;
 };
 
 struct ResolvedDeviceCommand {
@@ -35,6 +38,7 @@ struct ResolvedDeviceCommand {
     std::string device;
     std::string action;
     std::optional<double> value;
+    std::string mode;
     bool valid{false};
 };
 

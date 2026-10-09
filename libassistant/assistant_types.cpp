@@ -76,7 +76,8 @@ std::string formatDeviceCommand(const ResolvedDeviceCommand& command) {
     } else {
         oss << "<none>";
     }
-    oss << '\n' << "mode=simulation";
+    oss << '\n' << "hvac_mode=" << (command.mode.empty() ? "<none>" : command.mode)
+        << '\n' << "execution_mode=simulation";
     return oss.str();
 }
 

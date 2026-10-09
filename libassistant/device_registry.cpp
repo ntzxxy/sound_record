@@ -8,6 +8,7 @@ std::optional<ResolvedDeviceCommand> DeviceRegistry::resolve(const DeviceCommand
     resolved.device = command.device;
     resolved.action = command.action;
     resolved.value = command.value;
+    resolved.mode = command.mode;
 
     if (command.room == "客厅" && command.device == "空调") {
         resolved.device_id = "living_room_ac";

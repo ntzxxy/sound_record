@@ -12,6 +12,7 @@ namespace assistant {
 namespace {
 
 constexpr const char* kLogPrefix = "[AssistantContext]";
+constexpr int kDialogueFocusLifetimeTurns = 3;
 
 void printSnapshot(const std::vector<MemoryItem>& items) {
     std::cout << "[MemorySnapshot]" << std::endl;
@@ -38,6 +39,19 @@ std::string makeDeviceReply(const ResolvedDeviceCommand& command) {
                std::to_string(static_cast<int>(*command.value)) +
                "度的指令，当前为模拟控制模式。";
     }
+    if (command.action == "SET_MODE") {
+        std::string mode_text = "运行";
+        if (command.mode == "COOL") mode_text = "制冷";
+        else if (command.mode == "HEAT") mode_text = "制热";
+        else if (command.mode == "DRY") mode_text = "除湿";
+        else if (command.mode == "FAN") mode_text = "送风";
+        std::string reply = "已识别到将" + command.room + command.device +
+                            "切换到" + mode_text + "模式";
+        if (command.value) {
+            reply += "并调到" + std::to_string(static_cast<int>(*command.value)) + "度";
+        }
+        return reply + "的指令，当前为模拟控制模式。";
+    }
     return "已识别到" + action_text + command.room + command.device +
            "的指令，当前为模拟控制模式。";
 }
@@ -60,6 +74,12 @@ std::string makeInvalidDeviceCommandReply(const ResolvedDeviceCommand& command,
     }
     if (error == "invalid_temperature") {
         return "空调温度只支持设置在16到30度之间。";
+    }
+    if (error == "mode_unsupported_for_device") {
+        return command.room + command.device + "不支持空调运行模式设置。";
+    }
+    if (error == "invalid_hvac_mode") {
+        return "请选择制冷、制热、除湿或送风模式。";
     }
     return "这个设备指令暂时不支持。";
 }
@@ -137,7 +157,8 @@ bool hasControlVerb(const std::string& text) {
            containsText(text, "关闭") || containsText(text, "关掉") || containsText(text, "关机") ||
            containsText(text, "设置") || containsText(text, "设为") || containsText(text, "设成") ||
            containsText(text, "调到") || containsText(text, "调成") ||
-           containsText(text, "切换") || containsText(text, "启动");
+           containsText(text, "切换") || containsText(text, "启动") ||
+           containsText(text, "操作") || containsText(text, "控制");
 }
 
 bool isInformationalControlQuestion(const std::string& text) {
@@ -206,7 +227,7 @@ bool looksLikeDeviceControlText(const std::string& text) {
 
 bool hasAnyDeviceSlot(const DeviceCommand& command) {
     return !command.room.empty() || !command.device.empty() ||
-           !command.action.empty() || command.value.has_value();
+           !command.action.empty() || command.value.has_value() || !command.mode.empty();
 }
 
 bool isExcludedDeviceMention(const std::string& text, const std::string& device) {
@@ -233,6 +254,9 @@ std::vector<std::string> missingDeviceSlots(const DeviceCommand& command) {
     if (command.action == "SET_TEMPERATURE" && !command.value) {
         missing.push_back("value");
     }
+    if (command.action == "SET_MODE" && command.mode.empty()) {
+        missing.push_back("mode");
+    }
     return missing;
 }
 
@@ -243,6 +267,7 @@ DeviceCommand mergeDeviceCommand(const DeviceCommand& base,
     if (!patch.device.empty()) merged.device = patch.device;
     if (!patch.action.empty()) merged.action = patch.action;
     if (patch.value) merged.value = patch.value;
+    if (!patch.mode.empty()) merged.mode = patch.mode;
     return merged;
 }
 
@@ -370,6 +395,10 @@ std::optional<DeviceCommand> inferDeviceSlotsFromText(const std::string& text) {
     if (containsText(text, "制热") || containsText(text, "制冷") ||
         containsText(text, "除湿") || containsText(text, "送风")) {
         command.action = "SET_MODE";
+        if (containsText(text, "制冷")) command.mode = "COOL";
+        else if (containsText(text, "制热")) command.mode = "HEAT";
+        else if (containsText(text, "除湿")) command.mode = "DRY";
+        else if (containsText(text, "送风")) command.mode = "FAN";
     } else if (asks_power_on && !asks_power_off) {
         command.action = "TURN_ON";
     } else if (asks_power_off && !asks_power_on) {
@@ -456,6 +485,9 @@ std::string makeSlotClarification(const DeviceCommand& command,
     }
     if (hasSlot(missing, "value") && command.action == "SET_TEMPERATURE") {
         return "请问要设置到多少度？";
+    }
+    if (hasSlot(missing, "mode") && command.action == "SET_MODE") {
+        return "请问要切换到制冷、制热、除湿还是送风模式？";
     }
     return defaultClarification();
 }
@@ -727,17 +759,24 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
     result.intent_latency_ms = intent.intent_latency_ms;
     const std::optional<DeviceCommand> inferred_command = inferDeviceSlotsFromText(user_input);
 
-    // 焦点只跨一个用户回合：先取出上一轮焦点，再用本轮明确实体准备下一轮焦点。
+    // 房间/设备焦点短暂跨越数个用户回合，让一句自然插话不会立即丢失上下文。
+    // 焦点只补房间和设备，不携带执行动作。
     std::optional<DeviceCommand> previous_focus;
     if (dialogue_focus_ && dialogue_focus_turns_remaining_ > 0) {
         previous_focus = dialogue_focus_;
+        --dialogue_focus_turns_remaining_;
+        if (dialogue_focus_turns_remaining_ == 0) dialogue_focus_.reset();
     }
-    dialogue_focus_.reset();
-    dialogue_focus_turns_remaining_ = 0;
-    if (!isCancelText(user_input) && !hasControlVerb(user_input) &&
+    if (isCancelText(user_input)) {
+        dialogue_focus_.reset();
+        dialogue_focus_turns_remaining_ = 0;
+    } else if (!hasControlVerb(user_input) &&
         !isExecutionSuppressedControlText(user_input)) {
-        dialogue_focus_ = inferDialogueFocusFromText(user_input);
-        if (dialogue_focus_) dialogue_focus_turns_remaining_ = 1;
+        const std::optional<DeviceCommand> new_focus = inferDialogueFocusFromText(user_input);
+        if (new_focus) {
+            dialogue_focus_ = new_focus;
+            dialogue_focus_turns_remaining_ = kDialogueFocusLifetimeTurns;
+        }
     }
 
     // 执行保护必须早于意图纠正和续句合并，避免“不要开灯”因含控制词而被执行。
@@ -750,6 +789,18 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
         result.fixed_reply = nonExecutionControlReply(user_input);
         std::cout << "[ExecutionGuard] blocked_non_execution_control" << std::endl;
         return result;
+    }
+
+    // 分类模型只能提出候选，不能替用户补出“打开/关闭”等执行动作。
+    // 因此“卧室有点暗”“房间很热”只建立上下文并进入自然对话；只有用户
+    // 本轮原话含有明确控制动作时，才允许继续走设备执行链路。
+    if (intent.intent == IntentType::DeviceControl && !hasControlVerb(user_input)) {
+        intent.intent = IntentType::GeneralChat;
+        intent.device_command.reset();
+        intent.missing_slots.clear();
+        intent.clarification_question.clear();
+        result.task_type = IntentType::GeneralChat;
+        std::cout << "[ExecutionGuard] downgraded_implicit_observation" << std::endl;
     }
 
     const bool can_force_device_control =
@@ -783,11 +834,19 @@ ServiceResult AssistantService::processAnalyzed(const std::string& user_input,
         !isInformationalControlQuestion(user_input) &&
         !isExecutionSuppressedControlText(user_input)) {
         bool filled = false;
-        if (intent.device_command->room.empty() && !previous_focus->room.empty()) {
+        const bool same_device_context = intent.device_command->device.empty() ||
+                                         previous_focus->device.empty() ||
+                                         intent.device_command->device == previous_focus->device;
+        const bool same_room_context = intent.device_command->room.empty() ||
+                                       previous_focus->room.empty() ||
+                                       intent.device_command->room == previous_focus->room;
+        if (same_device_context && same_room_context &&
+            intent.device_command->room.empty() && !previous_focus->room.empty()) {
             intent.device_command->room = previous_focus->room;
             filled = true;
         }
-        if (intent.device_command->device.empty() && !previous_focus->device.empty()) {
+        if (same_device_context && same_room_context &&
+            intent.device_command->device.empty() && !previous_focus->device.empty()) {
             intent.device_command->device = previous_focus->device;
             filled = true;
         }

@@ -213,6 +213,7 @@ bool IntentJsonParser::parse(const std::string& text, IntentResult* result, std:
         getStringField(device_json, "device", &command.device);
         getStringField(device_json, "action", &command.action);
         command.value = getOptionalNumberField(device_json, "value");
+        getStringField(device_json, "mode", &command.mode);
         parsed.device_command = command;
     }
 

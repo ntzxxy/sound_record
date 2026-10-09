@@ -92,12 +92,14 @@ DeviceEvent makeEvent(const std::string& room,
 assistant::DeviceCommand makeCommand(const std::string& room,
                                      const std::string& device,
                                      const std::string& action,
-                                     std::optional<double> value = std::nullopt) {
+                                     std::optional<double> value = std::nullopt,
+                                     const std::string& mode = "") {
     assistant::DeviceCommand command;
     command.room = room;
     command.device = device;
     command.action = action;
     command.value = value;
+    command.mode = mode;
     return command;
 }
 
@@ -226,7 +228,7 @@ int main() {
         std::string error;
         const std::string json =
             "{\"intent\":\"DEVICE_CONTROL\",\"device_command\":{\"room\":\"卧室\","
-            "\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null},"
+            "\"device\":\"空调\",\"action\":\"TURN_ON\",\"value\":null,\"mode\":\"\"},"
             "\"device_event\":null,\"memory\":null,\"memory_query\":null,"
             "\"clarification_question\":\"\"}";
         CHECK(parser.parse(json, &result, &error));
@@ -236,6 +238,7 @@ int main() {
         CHECK(result.device_command->device == "空调");
         CHECK(result.device_command->action == "TURN_ON");
         CHECK(!result.device_command->value);
+        CHECK(result.device_command->mode.empty());
     }
 
     {
@@ -406,6 +409,18 @@ int main() {
         std::string error;
         CHECK(!validator.validate(*resolved, &error));
         CHECK(error == "light_temperature_unsupported");
+    }
+
+    {
+        DeviceRegistry registry;
+        DeviceCommandValidator validator;
+        assistant::DeviceCommand command =
+            makeCommand("卧室", "空调", "SET_MODE", 25.0, "COOL");
+        auto resolved = registry.resolve(command);
+        CHECK(resolved);
+        std::string error;
+        CHECK(validator.validate(*resolved, &error));
+        CHECK(resolved->mode == "COOL");
     }
 
     {
@@ -611,6 +626,32 @@ int main() {
     }
 
     {
+        // 即使语义模型把环境描述误判成控制，也不能替用户补出执行动作。
+        AssistantService service(kTestMemoryPath, kTestEventPath);
+        IntentResult mistaken_control;
+        mistaken_control.intent = IntentType::DeviceControl;
+        mistaken_control.device_command = makeCommand("卧室", "灯", "TURN_ON");
+        ServiceResult observation =
+            service.processAnalyzed("卧室有点太暗了", mistaken_control);
+        CHECK(observation.task_type == IntentType::GeneralChat);
+        CHECK(observation.call_llm);
+        CHECK(!observation.device_command);
+
+        IntentResult chat;
+        chat.intent = IntentType::GeneralChat;
+        ServiceResult aside = service.processAnalyzed("我刚回到房间", chat);
+        CHECK(aside.task_type == IntentType::GeneralChat);
+
+        IntentResult turn_on;
+        turn_on.intent = IntentType::DeviceControl;
+        turn_on.device_command = makeCommand("", "灯", "TURN_ON");
+        ServiceResult completed = service.processAnalyzed("那打开灯吧", turn_on);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_light");
+    }
+
+    {
         // 本轮明确说出的房间优先，不能被上一轮焦点覆盖。
         AssistantService service(kTestMemoryPath, kTestEventPath);
         IntentResult chat;
@@ -627,7 +668,7 @@ int main() {
     }
 
     {
-        // 焦点只保留到紧接着的一轮；中间插入闲聊后仍应询问房间。
+        // 焦点允许跨过少量自然插话，避免对话稍有停顿就重复询问房间。
         AssistantService service(kTestMemoryPath, kTestEventPath);
         IntentResult chat;
         chat.intent = IntentType::GeneralChat;
@@ -637,14 +678,15 @@ int main() {
         IntentResult turn_on;
         turn_on.intent = IntentType::DeviceControl;
         turn_on.device_command = makeCommand("", "灯", "TURN_ON");
-        ServiceResult clarify = service.processAnalyzed("打开灯", turn_on);
-        CHECK(clarify.task_type == IntentType::Clarify);
-        CHECK(!clarify.call_llm);
-        CHECK(clarify.fixed_reply == "请问要控制哪个房间的灯？");
+        ServiceResult completed = service.processAnalyzed("打开灯", turn_on);
+        CHECK(completed.task_type == IntentType::DeviceControl);
+        CHECK(!completed.call_llm);
+        CHECK(completed.device_command);
+        CHECK(completed.device_command->device_id == "bedroom_light");
     }
 
     {
-        // 焦点不提供动作；没有说开或关时仍必须澄清，不能直接执行。
+        // 焦点不提供动作；单独提到设备既不执行，也不触发机械式澄清。
         AssistantService service(kTestMemoryPath, kTestEventPath);
         IntentResult chat;
         chat.intent = IntentType::GeneralChat;
@@ -653,9 +695,10 @@ int main() {
         IntentResult no_action;
         no_action.intent = IntentType::DeviceControl;
         no_action.device_command = makeCommand("", "灯", "");
-        ServiceResult clarify = service.processAnalyzed("灯", no_action);
-        CHECK(clarify.task_type == IntentType::Clarify);
-        CHECK(!clarify.device_command);
+        ServiceResult chat_result = service.processAnalyzed("灯", no_action);
+        CHECK(chat_result.task_type == IntentType::GeneralChat);
+        CHECK(chat_result.call_llm);
+        CHECK(!chat_result.device_command);
     }
 
     {
@@ -721,6 +764,7 @@ int main() {
         CHECK(unsupported_action.intent.intent == IntentType::DeviceControl);
         CHECK(unsupported_action.intent.device_command);
         CHECK(unsupported_action.intent.device_command->action == "SET_MODE");
+        CHECK(unsupported_action.intent.device_command->mode == "HEAT");
         CHECK(router.analyze("风扇怎么打开？").status == LocalRouteStatus::Chat);
         const auto generic_memory_query = router.analyze("我的玄凤鹦鹉现在叫什么？");
         CHECK(generic_memory_query.status == LocalRouteStatus::FastPath);
@@ -790,11 +834,24 @@ int main() {
         CHECK(!missing_device.device_command);
         CHECK(missing_device.fixed_reply.find("当前没有找到阳台风扇") != std::string::npos);
 
-        ServiceResult unsupported_mode = service.process("让卧室空调切换到制热模式。");
-        CHECK(unsupported_mode.task_type == IntentType::DeviceControl);
-        CHECK(!unsupported_mode.call_llm);
-        CHECK(!unsupported_mode.device_command);
-        CHECK(unsupported_mode.fixed_reply.find("卧室空调暂不支持") != std::string::npos);
+        ServiceResult supported_mode = service.process("让卧室空调切换到制热模式。");
+        CHECK(supported_mode.task_type == IntentType::DeviceControl);
+        CHECK(!supported_mode.call_llm);
+        CHECK(supported_mode.device_command);
+        CHECK(supported_mode.device_command->action == "SET_MODE");
+        CHECK(supported_mode.device_command->mode == "HEAT");
+        CHECK(supported_mode.fixed_reply.find("制热模式") != std::string::npos);
+
+        ServiceResult combined_mode =
+            service.process("打开卧室空调，调到25度制冷模式");
+        CHECK(combined_mode.task_type == IntentType::DeviceControl);
+        CHECK(!combined_mode.call_llm);
+        CHECK(combined_mode.device_command);
+        CHECK(combined_mode.device_command->action == "SET_MODE");
+        CHECK(combined_mode.device_command->mode == "COOL");
+        CHECK(combined_mode.device_command->value == 25.0);
+        CHECK(combined_mode.fixed_reply.find("制冷模式") != std::string::npos);
+        CHECK(combined_mode.fixed_reply.find("25度") != std::string::npos);
 
         ServiceResult informational = service.process("风扇怎么打开？");
         CHECK(informational.task_type == IntentType::GeneralChat);

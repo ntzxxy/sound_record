@@ -48,7 +48,7 @@ private:
     // 参数不完整的设备命令只保留一轮，防止后续普通对话被误当成补充参数。
     std::optional<DeviceCommand> pending_device_command_;
     int pending_device_turns_remaining_{0};
-    // 最近一轮明确出现的房间/设备焦点。只用于给下一轮有明确动作的控制命令补槽位。
+    // 最近几轮明确出现的房间/设备焦点。只给后续有明确动作的命令补槽位。
     std::optional<DeviceCommand> dialogue_focus_;
     int dialogue_focus_turns_remaining_{0};
 };

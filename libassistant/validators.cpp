@@ -12,7 +12,7 @@ bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std:
         return false;
     }
     if (command.action != "TURN_ON" && command.action != "TURN_OFF" &&
-        command.action != "SET_TEMPERATURE") {
+        command.action != "SET_TEMPERATURE" && command.action != "SET_MODE") {
         if (error) *error = "unsupported_action";
         return false;
     }
@@ -23,7 +23,22 @@ bool DeviceCommandValidator::validate(const ResolvedDeviceCommand& command, std:
         if (error) *error = "light_temperature_unsupported";
         return false;
     }
-    if (command.action == "SET_TEMPERATURE") {
+    if (command.action == "SET_MODE") {
+        const bool is_air_conditioner = command.device == "空调" ||
+                                        command.device_id == "bedroom_ac" ||
+                                        command.device_id == "living_room_ac";
+        if (!is_air_conditioner) {
+            if (error) *error = "mode_unsupported_for_device";
+            return false;
+        }
+        if (command.mode != "COOL" && command.mode != "HEAT" &&
+            command.mode != "DRY" && command.mode != "FAN") {
+            if (error) *error = "invalid_hvac_mode";
+            return false;
+        }
+    }
+    if (command.action == "SET_TEMPERATURE" ||
+        (command.action == "SET_MODE" && command.value)) {
         if (!command.value || *command.value < 16.0 || *command.value > 30.0) {
             if (error) *error = "invalid_temperature";
             return false;

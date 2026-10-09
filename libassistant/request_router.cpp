@@ -132,7 +132,6 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     extractEntity(text, kRooms, sizeof(kRooms) / sizeof(kRooms[0]), &command.room);
     extractEntity(text, kDevices, sizeof(kDevices) / sizeof(kDevices[0]), &command.device);
 
-    // “模式”仍按设备控制处理，再由校验层明确告知当前不支持。
     const bool asks_power_on = contains(text, "打开") || contains(text, "开启") ||
                                contains(text, "启动") || contains(text, "开机");
     const bool asks_power_off = contains(text, "关闭") || contains(text, "关掉") ||
@@ -140,6 +139,10 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
     if (contains(text, "制热") || contains(text, "制冷") ||
         contains(text, "除湿") || contains(text, "送风")) {
         command.action = "SET_MODE";
+        if (contains(text, "制冷")) command.mode = "COOL";
+        else if (contains(text, "制热")) command.mode = "HEAT";
+        else if (contains(text, "除湿")) command.mode = "DRY";
+        else if (contains(text, "送风")) command.mode = "FAN";
     } else if (asks_power_on && !asks_power_off) {
         command.action = "TURN_ON";
     } else if (asks_power_off && !asks_power_on) {
@@ -152,7 +155,8 @@ std::optional<DeviceCommand> parseDeviceCommand(const std::string& text) {
 
     command.value = extractNumber(text);
     if (command.value && command.action.empty()) command.action = "SET_TEMPERATURE";
-    if (command.room.empty() && command.device.empty() && command.action.empty() && !command.value) {
+    if (command.room.empty() && command.device.empty() && command.action.empty() &&
+        !command.value && command.mode.empty()) {
         return std::nullopt;
     }
     return command;

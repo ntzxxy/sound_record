@@ -36,7 +36,8 @@ static bool g_is_r1_model = false;
 // 普通对话历史。工具结果不会写入这里：它们只作为当前轮可信上下文注入，
 // 防止过期的天气/设备数据在后续对话中被误当成最新事实。
 static std::deque<std::pair<std::string, std::string>> g_history;
-static const int MAX_HISTORY_PAIRS = 5;
+// 7 对历史在 8192-token 上下文内仍留有充足生成空间，也能覆盖短暂插话后的追问。
+static const int MAX_HISTORY_PAIRS = 7;
 static const size_t MAX_RUNTIME_CONTEXT_CHARS = 3000;
 
 // callback 桥接（全局变量）
